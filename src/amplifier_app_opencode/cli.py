@@ -11,8 +11,8 @@ Single-binary integration that wraps opencode for amplifier-agent users:
                  cost, capabilities, reasoning, _provider) so we can render
                  a rich opencode model picker.
   4. WRITE    -- materialise an ``opencode.json`` file at the project root
-                 with the dynamic provider block (npm, name, options.baseURL,
-                 options.apiKey, models). Preserves existing keys.
+                 (or the global ``~/.config/opencode/opencode.jsonc``) with
+                 the dynamic provider block. Preserves existing keys.
   5. EXEC     -- replace this process with ``opencode``, passing through any
                  extra argv. The user lands in the TUI with the live model
                  list already populated.
@@ -25,10 +25,17 @@ a static config (which is what it can accept).
 Drift handling: every ``amplifier-opencode`` launch re-fetches /v1/models
 and rewrites the config. If amplifier-agent's host_config.json adds OpenAI
 or Ollama or anything else, the next launch picks it up automatically.
+
+Subcommands:
+
+  amplifier-opencode             default: discover + write + launch
+  amplifier-opencode launch      explicit launch (same as default)
+  amplifier-opencode doctor      health checks for all prerequisites
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -61,6 +68,16 @@ PID_FILE = Path("/tmp/amplifier-opencode-agent.pid")
 # Global opencode config dir (XDG-aligned).
 GLOBAL_OPENCODE_DIR = Path.home() / ".config" / "opencode"
 
+# Provider credential env var mapping -- mirrors amplifier-agent's catalog,
+# kept here so ``doctor`` can report on every provider amplifier-agent
+# might surface without importing amplifier-agent code.
+KNOWN_PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "azure-openai": ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_KEY"),
+    "ollama": ("OLLAMA_HOST",),
+}
+
 
 def resolve_global_config_path() -> Path:
     """Locate (or pick) the global opencode config file.
@@ -84,7 +101,9 @@ def resolve_global_config_path() -> Path:
 
 
 def server_is_running(
-    base_url: str, api_key: str, timeout_s: float = DEFAULT_SERVER_PROBE_TIMEOUT_S
+    base_url: str,
+    api_key: str,
+    timeout_s: float = DEFAULT_SERVER_PROBE_TIMEOUT_S,
 ) -> bool:
     """Return True if amplifier-agent is reachable at ``base_url``.
 
@@ -196,46 +215,24 @@ def build_provider_block(
 ) -> dict[str, Any]:
     """Transform amplifier-agent's /v1/models into an opencode provider block.
 
-    amplifier-agent extends the OpenAI shape with optional fields
-    (display_name, limit, cost, capabilities, reasoning); we surface those
-    into opencode's model entry shape so the TUI shows real names and limits.
+    opencode's per-model schema lenient-strips unknown keys but fails the
+    WHOLE config decode on type mismatches in known fields. Empirically
+    (against opencode v1.17.8): ship only ``name`` per entry. Everything
+    else opencode infers from defaults during provider state init. Matches
+    the docs' "Atomic Chat" example.
     """
-    # opencode's per-model schema (ConfigProviderV1.Model at
-    # packages/core/src/v1/config/provider.ts:8-74) lenient-strips unknown
-    # keys but FAILS the whole config decode on type mismatches in known
-    # fields. When decode fails on global config, opencode catches via
-    # ``orElseSucceed(() => ({}))`` -- silently wiping the entire global
-    # config, including the ``provider.<id>.models`` block.
-    #
-    # Empirical fix: ship only ``name``. Everything else opencode infers
-    # from defaults during provider state init (capability flags = true,
-    # cost = 0, limit = 0/0). Matches the docs' Atomic Chat example.
-    #
-    # Optional fields that ARE safe to add (verified against the schema):
-    #   - reasoning: bool
-    #   - limit: { context: int, output: int }  -- BOTH required
-    #   - cost:  { input: float, output: float, cache_read?: float,
-    #             cache_write?: float, context_over_200k?: {...} } -- BOTH
-    #             input and output required if cost is present
-    # We keep these minimal here to maximise compatibility. The amplifier
-    # cost story is handled server-side anyway.
     models_block: dict[str, dict[str, Any]] = {}
     for m in models:
         mid = m.get("id")
         if not isinstance(mid, str) or not mid:
             continue
-        entry: dict[str, Any] = {
-            "name": m.get("display_name") or mid,
-        }
+        entry: dict[str, Any] = {"name": m.get("display_name") or mid}
         models_block[mid] = entry
 
     return {
         "npm": provider_npm,
         "name": provider_name,
-        "options": {
-            "baseURL": base_url,
-            "apiKey": api_key,
-        },
+        "options": {"baseURL": base_url, "apiKey": api_key},
         "models": models_block,
     }
 
@@ -253,14 +250,13 @@ def write_opencode_config(
 ) -> Path:
     """Merge the provider block into the target opencode config file.
 
-    Preserves any existing keys the user has set (other providers, plugins,
-    etc.). Only replaces ``provider.<provider_id>``. Creates the parent
-    directory and the file itself if they do not exist.
+    Preserves any existing keys (other providers, plugins, etc.). Only
+    replaces ``provider.<provider_id>``. Creates the parent directory and
+    the file itself if they do not exist.
 
-    Supports both ``opencode.json`` (strict JSON) and ``opencode.jsonc``
-    (JSON-with-comments) target paths. We always read/write as JSON; any
-    existing comments in a .jsonc file will be lost on rewrite, which is
-    a documented trade-off in the README.
+    Supports both ``opencode.json`` and ``opencode.jsonc`` target paths. We
+    always read/write as JSON; any existing comments in a .jsonc file will
+    be lost on rewrite (documented in the README).
     """
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -310,79 +306,39 @@ def exec_opencode(project_dir: Path, opencode_args: tuple[str, ...]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI entry
+# Internals
 # ---------------------------------------------------------------------------
 
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.option(
-    "--base-url",
-    default=DEFAULT_BASE_URL,
-    envvar="AMPLIFIER_AGENT_BASE_URL",
-    show_default=True,
-    help=(
-        "amplifier-agent base URL (used by both the discovery probe "
-        "and the opencode provider config)."
-    ),
-)
-@click.option(
-    "--api-key",
-    default=DEFAULT_API_KEY,
-    envvar="AMPLIFIER_AGENT_API_KEY",
-    show_default=True,
-    help="API key the chat-completions server expects (Authorization: Bearer ...).",
-)
-@click.option(
-    "--workspace",
-    default=DEFAULT_WORKSPACE,
-    envvar="AMPLIFIER_AGENT_WORKSPACE",
-    show_default=True,
-    help="amplifier-agent workspace name. Only used when starting the server.",
-)
-@click.option(
-    "--config",
-    "host_config",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    default=None,
-    envvar="AMPLIFIER_AGENT_HOST_CONFIG",
-    help="Path to amplifier-agent host_config.json. Only used when starting the server.",
-)
-@click.option(
-    "--project-dir",
-    type=click.Path(path_type=Path),
-    default=None,
-    show_default="(use global config)",
-    help=(
-        "Write opencode.json into THIS directory instead of the global "
-        "opencode config. The global path (~/.config/opencode/opencode.jsonc) "
-        "is the default so the adapter is available from every directory."
-    ),
-)
-@click.option(
-    "--no-start",
-    is_flag=True,
-    help="Do NOT auto-start amplifier-agent. Fail loudly if /v1/models is unreachable.",
-)
-@click.option(
-    "--no-launch",
-    is_flag=True,
-    help="Discover models and write opencode.json, but don't actually exec opencode.",
-)
-@click.option(
-    "--amplifier-agent-bin",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    envvar="AMPLIFIER_AGENT_BIN",
-    help="Override the amplifier-agent binary to use when starting the server.",
-)
-@click.option(
-    "--provider-id",
-    default=DEFAULT_PROVIDER_ID,
-    show_default=True,
-    help="Provider ID under opencode.json's provider.<id> key.",
-)
-@click.argument("opencode_args", nargs=-1, type=click.UNPROCESSED)
-def main(
+def _port_from_url(url: str) -> int:
+    """Best-effort port extraction from a base URL. Defaults to 9099."""
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.port:
+            return int(parsed.port)
+    except (ValueError, AttributeError):
+        pass
+    return 9099
+
+
+def _on_signal(signum: int, _frame: Any) -> None:
+    sys.exit(128 + signum)
+
+
+for _sig in (signal.SIGTERM, signal.SIGINT):
+    with contextlib.suppress(ValueError, OSError):
+        signal.signal(_sig, _on_signal)
+
+
+# ---------------------------------------------------------------------------
+# Launch implementation (shared between default + ``launch`` subcommand)
+# ---------------------------------------------------------------------------
+
+
+def _run_launch(
+    *,
     base_url: str,
     api_key: str,
     workspace: str,
@@ -394,36 +350,7 @@ def main(
     provider_id: str,
     opencode_args: tuple[str, ...],
 ) -> None:
-    """Launch opencode with auto-discovered amplifier-agent models.
-
-    Workflow on every invocation:
-
-      1. Probe amplifier-agent at --base-url.
-         If reachable, skip the start step. Otherwise (and unless --no-start),
-         spawn ``amplifier-agent serve chat-completions ...`` in the
-         background and wait for it to become ready.
-      2. GET /v1/models and translate the response into an opencode provider
-         block.
-      3. Write the block to ``<project-dir>/opencode.json`` under
-         ``provider.<provider-id>``. Preserves any other keys.
-      4. exec ``opencode`` from --project-dir.
-
-    Any extra arguments after ``--`` are passed through to opencode.
-
-    Examples:
-
-      amplifier-opencode
-
-      amplifier-opencode --base-url http://localhost:9099/v1
-
-      amplifier-opencode --config /path/to/host_config.json
-
-      amplifier-opencode --no-launch    # generate config without launching
-
-      amplifier-opencode --project-dir .  # write opencode.json into cwd
-
-      amplifier-opencode -- /your-opencode-args   # pass through to opencode
-    """
+    """The check -> start -> discover -> write -> exec flow."""
     # Resolve the config target: global by default, project-level if --project-dir.
     if project_dir is None:
         config_path = resolve_global_config_path()
@@ -438,14 +365,15 @@ def main(
         click.secho(f"[1/4] amplifier-agent already running at {base_url}", fg="green")
     elif no_start:
         raise click.ClickException(
-            f"amplifier-agent is NOT running at {base_url} and --no-start was passed. "
-            "Start it manually or remove --no-start to have us spawn it."
+            f"amplifier-agent is NOT running at {base_url} and --no-start "
+            "was passed. Start it manually or remove --no-start to have "
+            "us spawn it."
         )
     else:
-        # Derive the port from base_url so spawning works for non-default ports.
         port = _port_from_url(base_url)
         click.secho(
-            f"[1/4] Starting amplifier-agent (port {port}, workspace={workspace!r})", fg="cyan"
+            f"[1/4] Starting amplifier-agent (port {port}, workspace={workspace!r})",
+            fg="cyan",
         )
         start_amplifier_agent(
             port=port,
@@ -509,41 +437,351 @@ def main(
 
 
 # ---------------------------------------------------------------------------
-# Internals
+# Doctor implementation
 # ---------------------------------------------------------------------------
 
 
-def _port_from_url(url: str) -> int:
-    """Best-effort port extraction from a base URL. Defaults to 9099."""
-    try:
-        from urllib.parse import urlparse
+_OK = "[ OK ]"
+_FAIL = "[FAIL]"
+_INFO = "[INFO]"
+_WARN = "[WARN]"
 
-        parsed = urlparse(url)
-        if parsed.port:
-            return int(parsed.port)
-    except (ValueError, AttributeError):
-        pass
-    return 9099
+
+def _binary_version(binary: str, version_flag: str = "--version") -> str:
+    """Best-effort version string for a binary. Returns "?" on failure."""
+    try:
+        r = subprocess.run(
+            [binary, version_flag],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        return (r.stdout or r.stderr).strip().splitlines()[0]
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        return "?"
+
+
+def _check_amplifier_agent_binary() -> tuple[str, str]:
+    """Check 1: amplifier-agent binary on PATH."""
+    binary = shutil.which("amplifier-agent")
+    if not binary:
+        return (
+            _FAIL,
+            "amplifier-agent not on PATH. Install via "
+            "`uv tool install amplifier-agent` or see "
+            "https://github.com/microsoft/amplifier-agent.",
+        )
+    version = _binary_version(binary)
+    return _OK, f"amplifier-agent found at {binary} ({version})"
+
+
+def _check_opencode_binary() -> tuple[str, str]:
+    """Check 2: opencode binary on PATH."""
+    binary = shutil.which("opencode")
+    if not binary:
+        return (
+            _FAIL,
+            "opencode not on PATH. Install via "
+            "`curl -fsSL https://opencode.ai/install | bash` or see "
+            "https://opencode.ai/docs/intro for other methods.",
+        )
+    version = _binary_version(binary)
+    return _OK, f"opencode found at {binary} ({version})"
+
+
+def _check_amplifier_agent_server(base_url: str, api_key: str) -> tuple[str, str]:
+    """Check 3: amplifier-agent server reachability at base_url.
+
+    INFO (not FAIL) when down -- amplifier-opencode auto-starts it.
+    """
+    if server_is_running(base_url, api_key):
+        return _OK, f"amplifier-agent server running at {base_url}"
+    return (
+        _INFO,
+        f"amplifier-agent server NOT running at {base_url} "
+        f"(amplifier-opencode will auto-start it on next launch)",
+    )
+
+
+def _check_provider_credentials() -> tuple[str, str]:
+    """Check 4: at least one provider has a credential available.
+
+    Looks at shell env vars AND amplifier-agent's credentials.json if
+    present. FAIL only when NO providers have any credential anywhere.
+    """
+    env_set: list[str] = []
+    for provider, env_vars in KNOWN_PROVIDER_ENV_VARS.items():
+        for env_var in env_vars:
+            if os.environ.get(env_var):
+                env_set.append(f"{provider}={env_var}")
+                break
+
+    # Look at amplifier-agent credentials file too.
+    creds_file = Path.home() / ".amplifier-agent" / "credentials.json"
+    file_providers: list[str] = []
+    if creds_file.exists():
+        try:
+            data = json.loads(creds_file.read_text() or "{}")
+            providers = data.get("providers") or {}
+            for p, entry in providers.items():
+                if isinstance(entry, dict) and entry.get("api_key"):
+                    file_providers.append(p)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    if not env_set and not file_providers:
+        return (
+            _FAIL,
+            "No provider credentials found. Either export an env var "
+            "(e.g. `export ANTHROPIC_API_KEY=...`) or run "
+            "`amplifier-agent auth set anthropic <key>` to persist.",
+        )
+
+    parts = []
+    if env_set:
+        parts.append("env: " + ", ".join(env_set))
+    if file_providers:
+        parts.append("file: " + ", ".join(file_providers))
+    return _OK, "Credentials available (" + "; ".join(parts) + ")"
+
+
+def _check_opencode_config() -> tuple[str, str]:
+    """Check 5: opencode global config has the amplifier provider block."""
+    config_path = resolve_global_config_path()
+    if not config_path.exists():
+        return (
+            _INFO,
+            f"opencode config at {config_path} not yet generated "
+            "(run `amplifier-opencode` to create it).",
+        )
+    try:
+        data = json.loads(config_path.read_text() or "{}")
+    except json.JSONDecodeError as exc:
+        return _FAIL, f"opencode config at {config_path} is malformed JSON: {exc}"
+
+    amp = (data.get("provider") or {}).get(DEFAULT_PROVIDER_ID)
+    if not isinstance(amp, dict):
+        return (
+            _INFO,
+            f"opencode config at {config_path} has no provider.{DEFAULT_PROVIDER_ID} "
+            "(run `amplifier-opencode` to populate it).",
+        )
+    models = amp.get("models") or {}
+    return (
+        _OK,
+        f"opencode config has provider.{DEFAULT_PROVIDER_ID} with "
+        f"{len(models)} model{'s' if len(models) != 1 else ''}",
+    )
+
+
+def _check_live_models(base_url: str, api_key: str) -> tuple[str, str]:
+    """Check 6: enumerate live models from /v1/models if server is running.
+
+    INFO when server is down (we already reported that in check 3).
+    """
+    if not server_is_running(base_url, api_key):
+        return _INFO, "Skipped (server not running)"
+    try:
+        models = fetch_models(base_url, api_key)
+    except (httpx.HTTPError, click.ClickException) as exc:
+        return _FAIL, f"/v1/models failed: {exc}"
+    if not models:
+        return _WARN, "/v1/models returned 0 models"
+    ids = ", ".join(m.get("id", "?") for m in models[:5])
+    suffix = "..." if len(models) > 5 else ""
+    return _OK, f"Discovered {len(models)} model(s): {ids}{suffix}"
+
+
+def _run_doctor(base_url: str, api_key: str) -> int:
+    """Run all diagnostic checks. Returns exit code: 0=ok, 1=any FAIL."""
+    click.echo("amplifier-opencode doctor")
+    click.echo()
+
+    checks: list[tuple[str, str, str]] = [
+        ("amplifier-agent", *_check_amplifier_agent_binary()),
+        ("opencode", *_check_opencode_binary()),
+        ("server", *_check_amplifier_agent_server(base_url, api_key)),
+        ("credentials", *_check_provider_credentials()),
+        ("opencode config", *_check_opencode_config()),
+        ("live models", *_check_live_models(base_url, api_key)),
+    ]
+
+    fail_count = 0
+    for name, status, message in checks:
+        color = {
+            _OK: "green",
+            _FAIL: "red",
+            _INFO: "cyan",
+            _WARN: "yellow",
+        }.get(status, "white")
+        click.secho(f"  {status}  {name:<18}  {message}", fg=color)
+        if status == _FAIL:
+            fail_count += 1
+
+    click.echo()
+    if fail_count:
+        click.secho(
+            f"{fail_count} check(s) failed. Fix the FAIL items above before "
+            "running `amplifier-opencode`.",
+            fg="red",
+        )
+        return 1
+    click.secho("All required checks passed.", fg="green")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Click surface (subcommand-shaped, default = launch)
+# ---------------------------------------------------------------------------
+
+
+@click.group(
+    invoke_without_command=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.option(
+    "--base-url",
+    default=DEFAULT_BASE_URL,
+    envvar="AMPLIFIER_AGENT_BASE_URL",
+    show_default=True,
+    help="amplifier-agent base URL (probe + opencode provider config).",
+)
+@click.option(
+    "--api-key",
+    default=DEFAULT_API_KEY,
+    envvar="AMPLIFIER_AGENT_API_KEY",
+    show_default=True,
+    help="API key the server expects (Authorization: Bearer ...).",
+)
+@click.pass_context
+def main(ctx: click.Context, base_url: str, api_key: str) -> None:
+    """Launch opencode with auto-discovered amplifier-agent models.
+
+    Default action (when no subcommand is given): check the server, start
+    it if needed, discover models from ``/v1/models``, write
+    ``opencode.json``, then ``exec`` opencode.
+
+    \b
+    Subcommands:
+
+      launch   Same as default; explicit form for clarity in scripts.
+               Accepts pass-through args after ``--``.
+      doctor   Health checks for all prerequisites (binaries, server,
+               credentials, config). No side effects.
+
+    \b
+    Examples:
+
+      amplifier-opencode
+      amplifier-opencode doctor
+      amplifier-opencode --base-url http://localhost:9099/v1
+      amplifier-opencode launch --no-launch
+      amplifier-opencode launch -- run "hello"
+    """
+    ctx.ensure_object(dict)
+    ctx.obj["base_url"] = base_url
+    ctx.obj["api_key"] = api_key
+
+    if ctx.invoked_subcommand is None:
+        # Default action: invoke the launch subcommand with defaults.
+        ctx.invoke(launch)
+
+
+@main.command("launch")
+@click.option(
+    "--workspace",
+    default=DEFAULT_WORKSPACE,
+    envvar="AMPLIFIER_AGENT_WORKSPACE",
+    show_default=True,
+    help="amplifier-agent workspace name. Only used when starting the server.",
+)
+@click.option(
+    "--config",
+    "host_config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    envvar="AMPLIFIER_AGENT_HOST_CONFIG",
+    help="Path to amplifier-agent host_config.json. Only used when starting the server.",
+)
+@click.option(
+    "--project-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    show_default="(use global config)",
+    help=(
+        "Write opencode.json into THIS directory instead of the global "
+        "opencode config. The global path "
+        "(~/.config/opencode/opencode.jsonc) is the default so the adapter "
+        "is available from every directory."
+    ),
+)
+@click.option(
+    "--no-start",
+    is_flag=True,
+    help="Do NOT auto-start amplifier-agent. Fail loudly if /v1/models is unreachable.",
+)
+@click.option(
+    "--no-launch",
+    is_flag=True,
+    help="Discover models and write opencode.json, but don't actually exec opencode.",
+)
+@click.option(
+    "--amplifier-agent-bin",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    envvar="AMPLIFIER_AGENT_BIN",
+    help="Override the amplifier-agent binary to use when starting the server.",
+)
+@click.option(
+    "--provider-id",
+    default=DEFAULT_PROVIDER_ID,
+    show_default=True,
+    help="Provider ID under opencode.json's provider.<id> key.",
+)
+@click.argument("opencode_args", nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def launch(
+    ctx: click.Context,
+    workspace: str,
+    host_config: Path | None,
+    project_dir: Path | None,
+    no_start: bool,
+    no_launch: bool,
+    amplifier_agent_bin: Path | None,
+    provider_id: str,
+    opencode_args: tuple[str, ...],
+) -> None:
+    """Discover models, write opencode.json, exec opencode.
+
+    Any args after ``--`` are passed through to opencode unchanged.
+    """
+    _run_launch(
+        base_url=ctx.obj["base_url"],
+        api_key=ctx.obj["api_key"],
+        workspace=workspace,
+        host_config=host_config,
+        project_dir=project_dir,
+        no_start=no_start,
+        no_launch=no_launch,
+        amplifier_agent_bin=amplifier_agent_bin,
+        provider_id=provider_id,
+        opencode_args=opencode_args,
+    )
+
+
+@main.command("doctor")
+@click.pass_context
+def doctor(ctx: click.Context) -> None:
+    """Run health checks for amplifier-agent, opencode, credentials, config.
+
+    Reports on every prerequisite the default ``amplifier-opencode``
+    invocation depends on, plus a live model probe if the server is up.
+    Exits 0 when all required checks pass; exits 1 on any FAIL.
+    """
+    sys.exit(_run_doctor(ctx.obj["base_url"], ctx.obj["api_key"]))
 
 
 # Allow ``python -m amplifier_app_opencode`` --------------------------------
 
 if __name__ == "__main__":
     main()
-
-
-# Best-effort: if we get SIGTERM/SIGINT while the spawned amplifier-agent is
-# still running, let it survive (start_new_session=True already detached it).
-# We just exit cleanly.
-
-
-def _on_signal(signum: int, _frame: Any) -> None:
-    sys.exit(128 + signum)
-
-
-import contextlib  # noqa: E402
-
-for _sig in (signal.SIGTERM, signal.SIGINT):
-    # Some environments (e.g. non-main thread) reject signal handlers.
-    with contextlib.suppress(ValueError, OSError):
-        signal.signal(_sig, _on_signal)
