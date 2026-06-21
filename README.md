@@ -35,7 +35,7 @@ You need **three** things installed. The first two are owned by other projects;
 this README walks through the official install for each so a brand-new machine
 can get set up start-to-finish.
 
-### 1. amplifier-agent — the backend server
+### 1. amplifier-agent — the backend server (>= 0.8.0 required)
 
 `amplifier-agent` is the OpenAI-compatible HTTP server this adapter talks to.
 Install it via [`uv`](https://docs.astral.sh/uv/) (Astral's Python package
@@ -48,9 +48,18 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Install amplifier-agent as a global tool
 uv tool install amplifier-agent
 
-# Verify
+# Verify — output MUST report 0.8.0 or higher
 amplifier-agent --version
 ```
+
+> **Version requirement: `amplifier-agent >= 0.8.0` is mandatory.** Versions
+> below 0.8.0 do not ship the `serve chat-completions` HTTP face, multi-provider
+> routing, or the `auth` subcommand — `amplifier-opencode` will fail to spawn
+> the server, populate `/v1/models`, or read persisted credentials.
+>
+> If `amplifier-agent --version` reports an older version, upgrade with
+> `uv tool upgrade amplifier-agent` and re-run `amplifier-opencode doctor`
+> to confirm.
 
 For full install options (source builds, pinned versions, etc.) see the
 [amplifier-agent README](https://github.com/microsoft/amplifier-agent#install).
