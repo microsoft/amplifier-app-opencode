@@ -79,6 +79,77 @@ KNOWN_PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Static per-model price catalog (USD per 1M tokens)
+# ---------------------------------------------------------------------------
+
+# opencode looks up pricing by ``(providerID, modelID)``. The models.dev
+# catalog opencode bundles has entries for the canonical provider IDs
+# (anthropic, openai, ...) but NOT for our custom ``amplifier`` provider
+# -- so opencode renders our turns at $0.00 unless we declare cost in
+# the model entry ourselves.
+#
+# We mirror models.dev's pricing here so the model picker and per-turn
+# cost display work out of the box. Source of truth:
+#   https://github.com/sst/models -- the same registry opencode uses.
+#
+# Maintenance: when an upstream provider changes prices, update this
+# table. amplifier-agent's per-turn ``cost_usd`` (PR #68 on amplifier-agent)
+# still ships the authoritative dollar value on the wire for clients that
+# read it; this catalog is purely for opencode's TUI cost display.
+#
+# Verified pricing date: 2026-06-21.
+MODEL_PRICING_PER_MILLION: dict[str, dict[str, float]] = {
+    # ===== Anthropic =====
+    "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
+    "claude-sonnet-4-6":         {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+    "claude-opus-4-8":           {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
+    # ===== OpenAI =====
+    # GPT-4o
+    "gpt-4o":                    {"input": 2.5,  "output": 10.0,  "cache_read": 1.25},
+    "gpt-4o-mini":               {"input": 0.15, "output": 0.6,   "cache_read": 0.075},
+    # GPT-4.1
+    "gpt-4.1":                   {"input": 2.0,  "output": 8.0,   "cache_read": 0.5},
+    "gpt-4.1-mini":              {"input": 0.4,  "output": 1.6,   "cache_read": 0.1},
+    "gpt-4.1-nano":              {"input": 0.1,  "output": 0.4,   "cache_read": 0.025},
+    # GPT-5
+    "gpt-5":                     {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
+    "gpt-5-codex":               {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
+    "gpt-5-mini":                {"input": 0.25, "output": 2.0,   "cache_read": 0.025},
+    "gpt-5-nano":                {"input": 0.05, "output": 0.4,   "cache_read": 0.005},
+    "gpt-5-pro":                 {"input": 15.0, "output": 120.0},
+    # GPT-5.1
+    "gpt-5.1":                   {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
+    "gpt-5.1-codex":             {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
+    "gpt-5.1-codex-max":         {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
+    "gpt-5.1-codex-mini":        {"input": 0.25, "output": 2.0,   "cache_read": 0.025},
+    # GPT-5.2
+    "gpt-5.2":                   {"input": 1.75, "output": 14.0,  "cache_read": 0.175},
+    "gpt-5.2-codex":             {"input": 1.75, "output": 14.0,  "cache_read": 0.175},
+    # o-series (reasoning models)
+    "o1":                        {"input": 15.0, "output": 60.0,  "cache_read": 7.5},
+    "o1-pro":                    {"input": 150.0,"output": 600.0},
+    "o3":                        {"input": 2.0,  "output": 8.0,   "cache_read": 0.5},
+    "o3-mini":                   {"input": 1.1,  "output": 4.4,   "cache_read": 0.55},
+    "o3-pro":                    {"input": 20.0, "output": 80.0},
+    "o4-mini":                   {"input": 1.1,  "output": 4.4,   "cache_read": 0.275},
+    # Embeddings (output is always 0; opencode schema requires both fields)
+    "text-embedding-3-large":    {"input": 0.13, "output": 0.0},
+    "text-embedding-3-small":    {"input": 0.02, "output": 0.0},
+}
+
+
+def lookup_pricing(model_id: str) -> dict[str, float] | None:
+    """Return per-million-token pricing for ``model_id``, or None when absent.
+
+    Exact-match lookup against :data:`MODEL_PRICING_PER_MILLION`. Returns
+    ``None`` for unknown models so callers can distinguish "no pricing
+    declared" from "free model" (emitting zeros would falsely claim the
+    model is free).
+    """
+    return MODEL_PRICING_PER_MILLION.get(model_id)
+
+
 def resolve_global_config_path() -> Path:
     """Locate (or pick) the global opencode config file.
 
@@ -215,18 +286,75 @@ def build_provider_block(
 ) -> dict[str, Any]:
     """Transform amplifier-agent's /v1/models into an opencode provider block.
 
-    opencode's per-model schema lenient-strips unknown keys but fails the
-    WHOLE config decode on type mismatches in known fields. Empirically
-    (against opencode v1.17.8): ship only ``name`` per entry. Everything
-    else opencode infers from defaults during provider state init. Matches
-    the docs' "Atomic Chat" example.
+    opencode's per-model schema lenient-strips unknown keys but FAILS the
+    WHOLE config decode on type mismatches in known fields. When decode
+    fails on the global config, opencode catches via ``orElseSucceed(() =>
+    ({}))`` -- silently wiping every provider's models block. We're
+    therefore paranoid about types: every field we surface is strictly
+    validated before emission, and we skip a field rather than risk
+    dropping the whole entry.
+
+    Fields surfaced:
+
+      - ``name``  (always; falls back to id when no display_name)
+      - ``cost``  ``{input, output, cache_read?, cache_write?}`` -- USD
+                  per 1M tokens. Pulled from the static
+                  :data:`MODEL_PRICING_PER_MILLION` catalog because
+                  opencode keys catalog lookups by ``(providerID,
+                  modelID)`` and our custom ``amplifier`` providerID
+                  doesn't match anything in opencode's bundled models.dev
+                  registry. Without this declaration, opencode renders
+                  every turn at $0.00. Emitted only when both ``input``
+                  and ``output`` are present in the catalog (skipped
+                  silently for unknown models).
+      - ``limit`` ``{context, output}`` -- token-count budgets opencode
+                  uses for context-window warnings. Lifted from
+                  amplifier-agent's /v1/models ``limit`` field
+                  (originally ``ModelInfo.context_window`` /
+                  ``max_output_tokens``).
+
+    Note: amplifier-agent's PR #68 ALSO surfaces real per-turn
+    ``cost_usd`` on the chat-completions response (telemetry on the
+    wire). The catalog here is for opencode's TUI display since
+    opencode's @ai-sdk/openai-compatible adapter doesn't read
+    ``cost_usd`` today.
     """
     models_block: dict[str, dict[str, Any]] = {}
     for m in models:
         mid = m.get("id")
         if not isinstance(mid, str) or not mid:
             continue
+
         entry: dict[str, Any] = {"name": m.get("display_name") or mid}
+
+        # Cost block — from our static catalog. Skip when the model is
+        # not in the catalog (showing $0 zeros is worse than showing
+        # nothing; an empty cost block lets opencode know the data is
+        # missing rather than claiming the model is free).
+        pricing = lookup_pricing(mid)
+        if pricing is not None:
+            cost_entry: dict[str, float] = {
+                "input": float(pricing["input"]),
+                "output": float(pricing["output"]),
+            }
+            if "cache_read" in pricing:
+                cost_entry["cache_read"] = float(pricing["cache_read"])
+            if "cache_write" in pricing:
+                cost_entry["cache_write"] = float(pricing["cache_write"])
+            entry["cost"] = cost_entry
+
+        # Limit block — only emit when both context AND output are ints.
+        limit = m.get("limit")
+        if (
+            isinstance(limit, dict)
+            and isinstance(limit.get("context"), int)
+            and isinstance(limit.get("output"), int)
+        ):
+            entry["limit"] = {
+                "context": int(limit["context"]),
+                "output": int(limit["output"]),
+            }
+
         models_block[mid] = entry
 
     return {
