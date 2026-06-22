@@ -4,7 +4,7 @@ Single-binary integration that wraps opencode for amplifier-agent users:
 
   1. CHECK    -- is amplifier-agent's chat-completions server running?
   2. START    -- if not, spawn ``amplifier-agent serve chat-completions``
-                 in the background, with the user's --workspace + --config
+                 in the background, with the user's --workspace + --host-config
                  options.
   3. DISCOVER -- GET /v1/models from amplifier-agent. The response includes
                  amplifier-agent's metadata extensions (display_name, limit,
@@ -69,14 +69,63 @@ PID_FILE = Path("/tmp/amplifier-opencode-agent.pid")
 GLOBAL_OPENCODE_DIR = Path.home() / ".config" / "opencode"
 
 # Provider credential env var mapping -- mirrors amplifier-agent's catalog,
-# kept here so ``doctor`` can report on every provider amplifier-agent
-# might surface without importing amplifier-agent code.
+# kept here so ``doctor`` and ``build_host_config`` can share the same
+# single source of truth without importing amplifier-agent code.
 KNOWN_PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
     "azure-openai": ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_KEY"),
     "ollama": ("OLLAMA_HOST",),
 }
+
+# Flat tuple of every env var name across all providers (for error messages).
+_ALL_PROVIDER_ENV_VARS: tuple[str, ...] = tuple(
+    v for vs in KNOWN_PROVIDER_ENV_VARS.values() for v in vs
+)
+
+
+# ---------------------------------------------------------------------------
+# host_config.json auto-generation
+# ---------------------------------------------------------------------------
+
+
+def build_host_config(state_dir: Path) -> Path:
+    """Generate a host_config.json declaring every provider whose creds are in env.
+
+    Probes :data:`KNOWN_PROVIDER_ENV_VARS` and includes each provider whose env
+    var is set. Writes ``host_config.json`` into ``state_dir`` (creating the
+    directory at mode 0700 if needed) with mode 0600. Returns the path.
+
+    Raises :class:`click.ClickException` if no providers have credentials; the
+    message lists every env var the user could set.
+
+    The generated config is intentionally minimal (``{"providers": {<id>: {}}}``)
+    -- power users who want ``mcp``, ``approval``, ``skills``, or
+    per-provider config overrides should write their own host_config.json
+    and pass ``--host-config PATH``.
+    """
+    providers = {
+        pid: {}
+        for pid, env_vars in KNOWN_PROVIDER_ENV_VARS.items()
+        if any(os.environ.get(v) for v in env_vars)
+    }
+
+    if not providers:
+        raise click.ClickException(
+            "No provider credentials found. Set at least one of: "
+            + ", ".join(_ALL_PROVIDER_ENV_VARS)
+            + "\n\n"
+            + "Or write your own host_config.json and pass --host-config PATH."
+        )
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.chmod(0o700)
+
+    config_path = state_dir / "host_config.json"
+    config_path.write_text(json.dumps({"providers": providers}, indent=2), encoding="utf-8")
+    config_path.chmod(0o600)
+
+    return config_path
 
 
 def resolve_global_config_path() -> Path:
@@ -375,10 +424,20 @@ def _run_launch(
             f"[1/4] Starting amplifier-agent (port {port}, workspace={workspace!r})",
             fg="cyan",
         )
+        # Resolve the host_config to pass to amplifier-agent. When the user
+        # did not supply --host-config, auto-generate one from env vars so
+        # amplifier-agent >= 0.8.0 (which requires an explicit providers block
+        # at boot) starts successfully.
+        if host_config is not None:
+            resolved_config = host_config
+        else:
+            _state_dir = Path.home() / ".amplifier-opencode" / "state"
+            resolved_config = build_host_config(_state_dir)
+
         start_amplifier_agent(
             port=port,
             workspace=workspace,
-            host_config=host_config,
+            host_config=resolved_config,
             api_key=api_key,
             binary=str(amplifier_agent_bin) if amplifier_agent_bin else None,
         )
@@ -503,46 +562,57 @@ def _check_amplifier_agent_server(base_url: str, api_key: str) -> tuple[str, str
     )
 
 
-def _check_provider_credentials() -> tuple[str, str]:
-    """Check 4: at least one provider has a credential available.
+def _provider_section_lines() -> tuple[list[str], bool]:
+    """Build per-provider env-var status lines for the doctor output.
 
-    Looks at shell env vars AND amplifier-agent's credentials.json if
-    present. FAIL only when NO providers have any credential anywhere.
+    Returns ``(lines, failed)`` where ``failed`` is True when zero providers
+    have credentials (i.e. ``launch`` would abort with a ClickException).
+
+    The returned lines include the "Providers:" header, one line per provider
+    with a ✓/✗ indicator, a blank line, and a summary line.
     """
-    env_set: list[str] = []
-    for provider, env_vars in KNOWN_PROVIDER_ENV_VARS.items():
-        for env_var in env_vars:
-            if os.environ.get(env_var):
-                env_set.append(f"{provider}={env_var}")
-                break
+    lines: list[str] = []
+    lines.append("  Providers:")
 
-    # Look at amplifier-agent credentials file too.
-    creds_file = Path.home() / ".amplifier-agent" / "credentials.json"
-    file_providers: list[str] = []
-    if creds_file.exists():
-        try:
-            data = json.loads(creds_file.read_text() or "{}")
-            providers = data.get("providers") or {}
-            for p, entry in providers.items():
-                if isinstance(entry, dict) and entry.get("api_key"):
-                    file_providers.append(p)
-        except (OSError, json.JSONDecodeError):
-            pass
+    available: list[str] = []
+    unavailable_vars: list[str] = []  # primary env var name for each missing provider
 
-    if not env_set and not file_providers:
-        return (
-            _FAIL,
-            "No provider credentials found. Either export an env var "
-            "(e.g. `export ANTHROPIC_API_KEY=...`) or run "
-            "`amplifier-agent auth set anthropic <key>` to persist.",
+    for provider_id, env_vars in KNOWN_PROVIDER_ENV_VARS.items():
+        found_var = next((v for v in env_vars if os.environ.get(v)), None)
+        if found_var:
+            lines.append(f"    \u2713 {found_var} set \u2192 {provider_id} provider will be served")
+            available.append(provider_id)
+        else:
+            primary_var = env_vars[0]
+            lines.append(
+                f"    \u2717 {primary_var} not set \u2192 {provider_id} provider will NOT be served"
+            )
+            unavailable_vars.append(primary_var)
+
+    lines.append("")
+
+    if available:
+        count = len(available)
+        label = "providers" if count != 1 else "provider"
+        lines.append(
+            f"    \u2192 {count} {label} will be available on launch ({', '.join(available)})"
         )
+        if unavailable_vars:
+            lines.append(
+                "    \u2192 Set "
+                + " and/or ".join(unavailable_vars)
+                + " to enable additional providers"
+            )
+        failed = False
+    else:
+        lines.append(
+            "    \u2192 No provider credentials found. Set at least one of: "
+            + ", ".join(_ALL_PROVIDER_ENV_VARS)
+        )
+        lines.append("    \u2192 Or write your own host_config.json and pass --host-config PATH.")
+        failed = True
 
-    parts = []
-    if env_set:
-        parts.append("env: " + ", ".join(env_set))
-    if file_providers:
-        parts.append("file: " + ", ".join(file_providers))
-    return _OK, "Credentials available (" + "; ".join(parts) + ")"
+    return lines, failed
 
 
 def _check_opencode_config() -> tuple[str, str]:
@@ -601,7 +671,6 @@ def _run_doctor(base_url: str, api_key: str) -> int:
         ("amplifier-agent", *_check_amplifier_agent_binary()),
         ("opencode", *_check_opencode_binary()),
         ("server", *_check_amplifier_agent_server(base_url, api_key)),
-        ("credentials", *_check_provider_credentials()),
         ("opencode config", *_check_opencode_config()),
         ("live models", *_check_live_models(base_url, api_key)),
     ]
@@ -617,6 +686,14 @@ def _run_doctor(base_url: str, api_key: str) -> int:
         click.secho(f"  {status}  {name:<18}  {message}", fg=color)
         if status == _FAIL:
             fail_count += 1
+
+    # Provider section -- separate multi-line block showing per-provider status.
+    click.echo()
+    provider_lines, provider_failed = _provider_section_lines()
+    for line in provider_lines:
+        click.secho(line, fg="red" if provider_failed else None)
+    if provider_failed:
+        fail_count += 1
 
     click.echo()
     if fail_count:
@@ -696,12 +773,16 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
     help="amplifier-agent workspace name. Only used when starting the server.",
 )
 @click.option(
-    "--config",
+    "--host-config",
     "host_config",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
     envvar="AMPLIFIER_AGENT_HOST_CONFIG",
-    help="Path to amplifier-agent host_config.json. Only used when starting the server.",
+    help=(
+        "Path to a host_config.json to use verbatim. "
+        "Overrides the auto-generated config built from your env vars. "
+        "Only used when starting the server."
+    ),
 )
 @click.option(
     "--project-dir",

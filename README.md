@@ -117,6 +117,35 @@ unchanged.
 
 ---
 
+## Provider Credentials
+
+amplifier-opencode auto-detects which AI provider you have credentials for
+and configures amplifier-agent to serve those providers. Set one or more of
+the following environment variables before running `amplifier-opencode launch`:
+
+| Provider | Env var |
+|---|---|
+| Anthropic (Claude) | `ANTHROPIC_API_KEY` |
+| OpenAI (GPT) | `OPENAI_API_KEY` |
+| Azure OpenAI | `AZURE_OPENAI_API_KEY` or `AZURE_OPENAI_KEY` |
+| Ollama (local models) | `OLLAMA_HOST` |
+
+Run `amplifier-opencode doctor` to see which providers will be available.
+
+### Advanced: custom host_config.json
+
+If you want fine-grained control (custom MCP servers, approval policies,
+per-provider config overrides), write your own `host_config.json` and pass
+it with `--host-config`:
+
+```bash
+amplifier-opencode launch --host-config /path/to/host_config.json
+```
+
+See [amplifier-agent's host_config documentation](https://github.com/microsoft/amplifier-agent) for the full schema.
+
+---
+
 ## First run
 
 ```bash
@@ -248,7 +277,7 @@ Discover models, write opencode.json, exec opencode. Run when no subcommand is g
 | Flag | Env var | Default | Purpose |
 |---|---|---|---|
 | `--workspace` | `AMPLIFIER_AGENT_WORKSPACE` | `opencode` | Server-side workspace name (only used when starting the server) |
-| `--config` | `AMPLIFIER_AGENT_HOST_CONFIG` | — | Path to amplifier-agent host_config.json (only when starting) |
+| `--host-config` | `AMPLIFIER_AGENT_HOST_CONFIG` | — | Path to a host_config.json to use verbatim; overrides auto-generated config (only used when starting the server) |
 | `--project-dir` | — | (use global) | Write opencode.json into this directory instead of global config |
 | `--no-start` | — | false | Don't auto-start amplifier-agent; require server already up |
 | `--no-launch` | — | false | Don't exec opencode; just write the config |
