@@ -56,7 +56,11 @@ import httpx
 DEFAULT_BASE_URL = "http://127.0.0.1:9099/v1"
 DEFAULT_API_KEY = "local-dev-secret"
 DEFAULT_WORKSPACE = "opencode"
-DEFAULT_SERVER_READY_TIMEOUT_S = 30.0
+# 2 minutes: covers cold-prep first-launch (amplifier-agent installs 4 provider
+# modules + the bundle's tool/hook modules via git fetch on first invocation,
+# which can take 60-90s on slower networks). Warm boots typically finish in
+# under 5s and exit the poll loop early.
+DEFAULT_SERVER_READY_TIMEOUT_S = 120.0
 DEFAULT_SERVER_PROBE_TIMEOUT_S = 2.0
 DEFAULT_PROVIDER_ID = "amplifier"
 DEFAULT_PROVIDER_NAME = "Amplifier"
