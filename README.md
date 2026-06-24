@@ -58,34 +58,33 @@ required by the uv and opencode one-line installers.
 ### 1. amplifier-agent — the backend server (>= 0.8.0 required)
 
 `amplifier-agent` is the OpenAI-compatible HTTP server this adapter talks to.
-Install it via [`uv`](https://docs.astral.sh/uv/) (Astral's Python package
-manager):
+Use the official one-line installer — it pulls the latest released binary and
+primes the bundle cache so the first run is instant:
 
 ```bash
-# Install uv if you don't have it
-curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash
 
-# Install amplifier-agent as a global tool (from git source — not yet on PyPI)
-uv tool install --from git+https://github.com/microsoft/amplifier-agent amplifier-agent
+# to pin a specific version instead of latest:
+#   curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash -s -- --tag v0.9.0
 
-# Verify — output MUST report 0.8.0 or higher
-amplifier-agent --version
+# ensure ~/.local/bin is on PATH, then verify:
+amplifier-agent version --json   # → {"version":"0.9.0","protocolVersion":"0.3.0"}
 ```
 
-> Once amplifier-agent is published to PyPI, this will become the simpler
-> `uv tool install amplifier-agent`. Until then, use the `--from git+...`
-> form above.
+The installer needs [`uv`](https://docs.astral.sh/uv/) and `curl` on PATH and
+will tell you exactly what to install if either is missing — it will not
+bootstrap them silently.
 
 > **Version requirement: `amplifier-agent >= 0.8.0` is mandatory.** Versions
 > below 0.8.0 do not ship the `serve chat-completions` HTTP face, multi-provider
 > routing, or the `auth` subcommand — `amplifier-opencode` will fail to spawn
 > the server, populate `/v1/models`, or read persisted credentials.
 >
-> If `amplifier-agent --version` reports an older version, upgrade with
-> `uv tool upgrade amplifier-agent` and re-run `amplifier-opencode doctor`
-> to confirm.
+> If the version reported is older than 0.8.0, upgrade in place with
+> `amplifier-agent update` and re-run `amplifier-opencode doctor` to confirm.
 
-For full install options (source builds, pinned versions, etc.) see the
+For full install options (source builds, manual `uv tool install --from git+…`,
+installer flags) see the
 [amplifier-agent README](https://github.com/microsoft/amplifier-agent#install).
 
 ### 2. opencode — the TUI
@@ -212,24 +211,46 @@ You'll see something like:
       - anthropic   claude-opus-4-8                      Claude Opus 4.8
       - anthropic   claude-sonnet-4-6                    Claude Sonnet 4.6
 [3/4] Wrote /Users/you/.config/opencode/opencode.jsonc  (global config)
-[4/4] Launching opencode in /Users/you/...
+[4/4] Configuration complete.
+
+✓ opencode is configured to use Amplifier. Pick how you want to drive it:
+
+    TUI       run `opencode` in any directory
+    Desktop   open the opencode desktop app — it picks up the global config
+    Headless  opencode run "your prompt here"
+
+To jump straight into the TUI next time: amplifier-opencode launch
 ```
 
-The opencode TUI then opens. Type `/models` and pick a Claude model under the
-**Amplifier** section. Send a prompt. Done.
+The bridge is now set up. Run `opencode` in any terminal and pick a model under
+the **Amplifier** section — or open the opencode desktop app. The global config
+applies everywhere.
+
+If you'd rather have one command that sets up the bridge AND drops you into the
+TUI, use `amplifier-opencode launch` instead.
 
 ---
 
 ## Daily usage
 
-### Just run it
+### Refresh the bridge
 
 ```bash
 amplifier-opencode
 ```
 
-The default action does the full check → discover → write → launch flow. From
-any directory.
+Default action: check the server, start it if needed, re-discover models, and
+update `opencode.jsonc`. Doesn't launch anything — just keeps the bridge in
+sync with whatever amplifier-agent is currently serving. Run this any time you
+change providers, add credentials, or restart amplifier-agent.
+
+### Set up the bridge AND launch the TUI
+
+```bash
+amplifier-opencode launch
+```
+
+Same setup flow plus an exec into the opencode TUI. From any directory.
 
 ### Pass arguments through to opencode
 
@@ -239,20 +260,12 @@ Anything after `--` is forwarded to opencode:
 amplifier-opencode launch -- run "summarise this codebase"
 ```
 
-### Regenerate the config without launching
-
-```bash
-amplifier-opencode launch --no-launch
-```
-
-Useful if you've restarted amplifier-agent with a different host config and
-just want to refresh `opencode.jsonc` without entering the TUI.
-
 ### Write to a project's opencode.json instead of the global config
 
 ```bash
 cd my-project
-amplifier-opencode launch --project-dir .
+amplifier-opencode --project-dir .          # bridge only, into ./opencode.json
+amplifier-opencode launch --project-dir .   # bridge + TUI from this directory
 ```
 
 The generated config lives in `./opencode.json`. opencode walks up from cwd to
@@ -265,7 +278,7 @@ find it.
 amplifier-opencode --base-url http://my-server:9099/v1 --api-key my-token
 
 # Server already running — don't auto-start
-amplifier-opencode launch --no-start
+amplifier-opencode --no-start
 ```
 
 ---
@@ -300,7 +313,7 @@ Common FAILs and their fix:
 
 | FAIL message | Fix |
 |---|---|
-| `amplifier-agent not on PATH` | `uv tool install --from git+https://github.com/microsoft/amplifier-agent amplifier-agent` (then open a new terminal) |
+| `amplifier-agent not on PATH` | Re-run the install one-liner above, then open a new terminal |
 | `opencode not on PATH` | `curl -fsSL https://opencode.ai/install \| bash` (then open a new terminal) |
 | `No provider credentials found` | Export `ANTHROPIC_API_KEY`, OR run `amplifier-agent auth set anthropic <key>` |
 | `opencode config ... is malformed JSON` | Open `~/.config/opencode/opencode.jsonc`, fix or delete it, retry |

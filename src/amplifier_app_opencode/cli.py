@@ -154,41 +154,46 @@ def build_host_config(state_dir: Path) -> Path:
 # Verified pricing date: 2026-06-21.
 MODEL_PRICING_PER_MILLION: dict[str, dict[str, float]] = {
     # ===== Anthropic =====
-    "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
-    "claude-sonnet-4-6":         {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
-    "claude-opus-4-8":           {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
+    "claude-haiku-4-5-20251001": {
+        "input": 1.0,
+        "output": 5.0,
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+    },
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+    "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     # ===== OpenAI =====
     # GPT-4o
-    "gpt-4o":                    {"input": 2.5,  "output": 10.0,  "cache_read": 1.25},
-    "gpt-4o-mini":               {"input": 0.15, "output": 0.6,   "cache_read": 0.075},
+    "gpt-4o": {"input": 2.5, "output": 10.0, "cache_read": 1.25},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.6, "cache_read": 0.075},
     # GPT-4.1
-    "gpt-4.1":                   {"input": 2.0,  "output": 8.0,   "cache_read": 0.5},
-    "gpt-4.1-mini":              {"input": 0.4,  "output": 1.6,   "cache_read": 0.1},
-    "gpt-4.1-nano":              {"input": 0.1,  "output": 0.4,   "cache_read": 0.025},
+    "gpt-4.1": {"input": 2.0, "output": 8.0, "cache_read": 0.5},
+    "gpt-4.1-mini": {"input": 0.4, "output": 1.6, "cache_read": 0.1},
+    "gpt-4.1-nano": {"input": 0.1, "output": 0.4, "cache_read": 0.025},
     # GPT-5
-    "gpt-5":                     {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5-codex":               {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5-mini":                {"input": 0.25, "output": 2.0,   "cache_read": 0.025},
-    "gpt-5-nano":                {"input": 0.05, "output": 0.4,   "cache_read": 0.005},
-    "gpt-5-pro":                 {"input": 15.0, "output": 120.0},
+    "gpt-5": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5-codex": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5-mini": {"input": 0.25, "output": 2.0, "cache_read": 0.025},
+    "gpt-5-nano": {"input": 0.05, "output": 0.4, "cache_read": 0.005},
+    "gpt-5-pro": {"input": 15.0, "output": 120.0},
     # GPT-5.1
-    "gpt-5.1":                   {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5.1-codex":             {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5.1-codex-max":         {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5.1-codex-mini":        {"input": 0.25, "output": 2.0,   "cache_read": 0.025},
+    "gpt-5.1": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5.1-codex": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5.1-codex-max": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5.1-codex-mini": {"input": 0.25, "output": 2.0, "cache_read": 0.025},
     # GPT-5.2
-    "gpt-5.2":                   {"input": 1.75, "output": 14.0,  "cache_read": 0.175},
-    "gpt-5.2-codex":             {"input": 1.75, "output": 14.0,  "cache_read": 0.175},
+    "gpt-5.2": {"input": 1.75, "output": 14.0, "cache_read": 0.175},
+    "gpt-5.2-codex": {"input": 1.75, "output": 14.0, "cache_read": 0.175},
     # o-series (reasoning models)
-    "o1":                        {"input": 15.0, "output": 60.0,  "cache_read": 7.5},
-    "o1-pro":                    {"input": 150.0,"output": 600.0},
-    "o3":                        {"input": 2.0,  "output": 8.0,   "cache_read": 0.5},
-    "o3-mini":                   {"input": 1.1,  "output": 4.4,   "cache_read": 0.55},
-    "o3-pro":                    {"input": 20.0, "output": 80.0},
-    "o4-mini":                   {"input": 1.1,  "output": 4.4,   "cache_read": 0.275},
+    "o1": {"input": 15.0, "output": 60.0, "cache_read": 7.5},
+    "o1-pro": {"input": 150.0, "output": 600.0},
+    "o3": {"input": 2.0, "output": 8.0, "cache_read": 0.5},
+    "o3-mini": {"input": 1.1, "output": 4.4, "cache_read": 0.55},
+    "o3-pro": {"input": 20.0, "output": 80.0},
+    "o4-mini": {"input": 1.1, "output": 4.4, "cache_read": 0.275},
     # Embeddings (output is always 0; opencode schema requires both fields)
-    "text-embedding-3-large":    {"input": 0.13, "output": 0.0},
-    "text-embedding-3-small":    {"input": 0.02, "output": 0.0},
+    "text-embedding-3-large": {"input": 0.13, "output": 0.0},
+    "text-embedding-3-small": {"input": 0.02, "output": 0.0},
 }
 
 
@@ -616,11 +621,21 @@ def _run_launch(
 
     # Step 4: exec opencode --------------------------------------------------
     if no_launch:
+        click.secho("[4/4] Configuration complete.", fg="green")
+        click.echo()
         click.secho(
-            f"[4/4] --no-launch given; not exec'ing opencode. "
-            f"cd {launch_dir} && opencode  to enter the TUI.",
-            fg="yellow",
+            "\u2713 opencode is configured to use Amplifier. Pick how you want to drive it:",
+            fg="green",
+            bold=True,
         )
+        click.echo()
+        click.echo("    TUI       run `opencode` in any directory")
+        click.echo(
+            "    Desktop   open the opencode desktop app \u2014 it picks up the global config"
+        )
+        click.echo('    Headless  opencode run "your prompt here"')
+        click.echo()
+        click.echo("To jump straight into the TUI next time: amplifier-opencode launch")
         return
 
     click.secho(f"[4/4] Launching opencode in {launch_dir}", fg="cyan")
@@ -864,16 +879,20 @@ def _run_doctor(base_url: str, api_key: str) -> int:
 )
 @click.pass_context
 def main(ctx: click.Context, base_url: str, api_key: str) -> None:
-    """Launch opencode with auto-discovered amplifier-agent models.
+    """Bridge amplifier-agent and opencode: set up the server + config,
+    then tell you how to drive opencode.
 
     Default action (when no subcommand is given): check the server, start
     it if needed, discover models from ``/v1/models``, write
-    ``opencode.json``, then ``exec`` opencode.
+    ``opencode.json``, and report success. Does NOT exec opencode --
+    opencode has a TUI, a Desktop app, and a headless mode; pick which
+    one to drive after the bridge is ready.
 
     \b
     Subcommands:
 
-      launch   Same as default; explicit form for clarity in scripts.
+      prepare  Same as default; explicit form for clarity in scripts.
+      launch   Same setup + exec the opencode TUI in one step.
                Accepts pass-through args after ``--``.
       doctor   Health checks for all prerequisites (binaries, server,
                credentials, config). No side effects.
@@ -881,10 +900,10 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
     \b
     Examples:
 
-      amplifier-opencode
-      amplifier-opencode doctor
+      amplifier-opencode                 # set up the bridge, then run `opencode`
+      amplifier-opencode launch          # set up + jump straight into the TUI
+      amplifier-opencode doctor          # what's wrong?
       amplifier-opencode --base-url http://localhost:9099/v1
-      amplifier-opencode launch --no-launch
       amplifier-opencode launch -- run "hello"
     """
     ctx.ensure_object(dict)
@@ -892,8 +911,10 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
     ctx.obj["api_key"] = api_key
 
     if ctx.invoked_subcommand is None:
-        # Default action: invoke the launch subcommand with defaults.
-        ctx.invoke(launch)
+        # Default action: prepare the bridge without exec'ing opencode.
+        # Users explicitly pick how to drive opencode (TUI / Desktop /
+        # headless) after this completes.
+        ctx.invoke(prepare)
 
 
 @main.command("launch")
@@ -979,6 +1000,88 @@ def launch(
         amplifier_agent_bin=amplifier_agent_bin,
         provider_id=provider_id,
         opencode_args=opencode_args,
+    )
+
+
+@main.command("prepare")
+@click.option(
+    "--workspace",
+    default=DEFAULT_WORKSPACE,
+    envvar="AMPLIFIER_AGENT_WORKSPACE",
+    show_default=True,
+    help="amplifier-agent workspace name. Only used when starting the server.",
+)
+@click.option(
+    "--host-config",
+    "host_config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    envvar="AMPLIFIER_AGENT_HOST_CONFIG",
+    help=(
+        "Path to a host_config.json to use verbatim. "
+        "Overrides the auto-generated config built from your env vars. "
+        "Only used when starting the server."
+    ),
+)
+@click.option(
+    "--project-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    show_default="(use global config)",
+    help=(
+        "Write opencode.json into THIS directory instead of the global "
+        "opencode config. The global path "
+        "(~/.config/opencode/opencode.jsonc) is the default so the adapter "
+        "is available from every directory."
+    ),
+)
+@click.option(
+    "--no-start",
+    is_flag=True,
+    help="Do NOT auto-start amplifier-agent. Fail loudly if /v1/models is unreachable.",
+)
+@click.option(
+    "--amplifier-agent-bin",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    envvar="AMPLIFIER_AGENT_BIN",
+    help="Override the amplifier-agent binary to use when starting the server.",
+)
+@click.option(
+    "--provider-id",
+    default=DEFAULT_PROVIDER_ID,
+    show_default=True,
+    help="Provider ID under opencode.json's provider.<id> key.",
+)
+@click.pass_context
+def prepare(
+    ctx: click.Context,
+    workspace: str,
+    host_config: Path | None,
+    project_dir: Path | None,
+    no_start: bool,
+    amplifier_agent_bin: Path | None,
+    provider_id: str,
+) -> None:
+    """Set up the bridge: start the server, discover models, write opencode.json.
+
+    Does NOT exec opencode -- opencode has a TUI, a Desktop app, and a
+    headless mode; pick which one to drive after the bridge is ready.
+
+    Use ``amplifier-opencode launch`` if you want to set up AND jump into
+    the opencode TUI in one step.
+    """
+    _run_launch(
+        base_url=ctx.obj["base_url"],
+        api_key=ctx.obj["api_key"],
+        workspace=workspace,
+        host_config=host_config,
+        project_dir=project_dir,
+        no_start=no_start,
+        no_launch=True,
+        amplifier_agent_bin=amplifier_agent_bin,
+        provider_id=provider_id,
+        opencode_args=(),
     )
 
 
