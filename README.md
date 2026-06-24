@@ -38,30 +38,33 @@ can get set up start-to-finish.
 ### 1. amplifier-agent — the backend server (>= 0.8.0 required)
 
 `amplifier-agent` is the OpenAI-compatible HTTP server this adapter talks to.
-Install it via [`uv`](https://docs.astral.sh/uv/) (Astral's Python package
-manager):
+Use the official one-line installer — it pulls the latest released binary and
+primes the bundle cache so the first run is instant:
 
 ```bash
-# Install uv if you don't have it
-curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash
 
-# Install amplifier-agent as a global tool
-uv tool install amplifier-agent
+# to pin a specific version instead of latest:
+#   curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash -s -- --tag v0.9.0
 
-# Verify — output MUST report 0.8.0 or higher
-amplifier-agent --version
+# ensure ~/.local/bin is on PATH, then verify:
+amplifier-agent version --json   # → {"version":"0.9.0","protocolVersion":"0.3.0"}
 ```
+
+The installer needs [`uv`](https://docs.astral.sh/uv/) and `curl` on PATH and
+will tell you exactly what to install if either is missing — it will not
+bootstrap them silently.
 
 > **Version requirement: `amplifier-agent >= 0.8.0` is mandatory.** Versions
 > below 0.8.0 do not ship the `serve chat-completions` HTTP face, multi-provider
 > routing, or the `auth` subcommand — `amplifier-opencode` will fail to spawn
 > the server, populate `/v1/models`, or read persisted credentials.
 >
-> If `amplifier-agent --version` reports an older version, upgrade with
-> `uv tool upgrade amplifier-agent` and re-run `amplifier-opencode doctor`
-> to confirm.
+> If the version reported is older than 0.8.0, upgrade in place with
+> `amplifier-agent update` and re-run `amplifier-opencode doctor` to confirm.
 
-For full install options (source builds, pinned versions, etc.) see the
+For full install options (source builds, manual `uv tool install --from git+…`,
+installer flags) see the
 [amplifier-agent README](https://github.com/microsoft/amplifier-agent#install).
 
 ### 2. opencode — the TUI
@@ -259,7 +262,7 @@ Common FAILs and their fix:
 
 | FAIL message | Fix |
 |---|---|
-| `amplifier-agent not on PATH` | `uv tool install amplifier-agent` (then open a new terminal) |
+| `amplifier-agent not on PATH` | Re-run the install one-liner above, then open a new terminal |
 | `opencode not on PATH` | `curl -fsSL https://opencode.ai/install \| bash` (then open a new terminal) |
 | `No provider credentials found` | Export `ANTHROPIC_API_KEY`, OR run `amplifier-agent auth set anthropic <key>` |
 | `opencode config ... is malformed JSON` | Open `~/.config/opencode/opencode.jsonc`, fix or delete it, retry |
