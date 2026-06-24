@@ -174,24 +174,46 @@ You'll see something like:
       - anthropic   claude-opus-4-8                      Claude Opus 4.8
       - anthropic   claude-sonnet-4-6                    Claude Sonnet 4.6
 [3/4] Wrote /Users/you/.config/opencode/opencode.jsonc  (global config)
-[4/4] Launching opencode in /Users/you/...
+[4/4] Configuration complete.
+
+✓ opencode is configured to use Amplifier. Pick how you want to drive it:
+
+    TUI       run `opencode` in any directory
+    Desktop   open the opencode desktop app — it picks up the global config
+    Headless  opencode run "your prompt here"
+
+To jump straight into the TUI next time: amplifier-opencode launch
 ```
 
-The opencode TUI then opens. Type `/models` and pick a Claude model under the
-**Amplifier** section. Send a prompt. Done.
+The bridge is now set up. Run `opencode` in any terminal and pick a model under
+the **Amplifier** section — or open the opencode desktop app. The global config
+applies everywhere.
+
+If you'd rather have one command that sets up the bridge AND drops you into the
+TUI, use `amplifier-opencode launch` instead.
 
 ---
 
 ## Daily usage
 
-### Just run it
+### Refresh the bridge
 
 ```bash
 amplifier-opencode
 ```
 
-The default action does the full check → discover → write → launch flow. From
-any directory.
+Default action: check the server, start it if needed, re-discover models, and
+update `opencode.jsonc`. Doesn't launch anything — just keeps the bridge in
+sync with whatever amplifier-agent is currently serving. Run this any time you
+change providers, add credentials, or restart amplifier-agent.
+
+### Set up the bridge AND launch the TUI
+
+```bash
+amplifier-opencode launch
+```
+
+Same setup flow plus an exec into the opencode TUI. From any directory.
 
 ### Pass arguments through to opencode
 
@@ -201,20 +223,12 @@ Anything after `--` is forwarded to opencode:
 amplifier-opencode launch -- run "summarise this codebase"
 ```
 
-### Regenerate the config without launching
-
-```bash
-amplifier-opencode launch --no-launch
-```
-
-Useful if you've restarted amplifier-agent with a different host config and
-just want to refresh `opencode.jsonc` without entering the TUI.
-
 ### Write to a project's opencode.json instead of the global config
 
 ```bash
 cd my-project
-amplifier-opencode launch --project-dir .
+amplifier-opencode --project-dir .          # bridge only, into ./opencode.json
+amplifier-opencode launch --project-dir .   # bridge + TUI from this directory
 ```
 
 The generated config lives in `./opencode.json`. opencode walks up from cwd to
@@ -227,7 +241,7 @@ find it.
 amplifier-opencode --base-url http://my-server:9099/v1 --api-key my-token
 
 # Server already running — don't auto-start
-amplifier-opencode launch --no-start
+amplifier-opencode --no-start
 ```
 
 ---
