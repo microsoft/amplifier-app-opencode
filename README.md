@@ -31,9 +31,29 @@ With this adapter:
 
 ## Prerequisites
 
-You need **three** things installed. The first two are owned by other projects;
-this README walks through the official install for each so a brand-new machine
-can get set up start-to-finish.
+You need **a few system tools** and **three Amplifier components** installed.
+This README walks through the official install for each so a brand-new
+machine can get set up start-to-finish.
+
+### 0. System tools — git, curl
+
+Most macOS installs already have these via Xcode Command Line Tools. On a
+fresh Linux container you'll need:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get update && sudo apt-get install -y git curl
+
+# Fedora/RHEL
+sudo dnf install -y git curl
+
+# Arch
+sudo pacman -S --noconfirm git curl
+```
+
+Why: `git` is required because amplifier-agent and amplifier-app-opencode are
+installed via `git+https://...` URLs (neither is on PyPI yet). `curl` is
+required by the uv and opencode one-line installers.
 
 ### 1. amplifier-agent — the backend server (>= 0.8.0 required)
 
@@ -75,12 +95,29 @@ The official one-line installer downloads the platform-native opencode binary:
 curl -fsSL https://opencode.ai/install | bash
 ```
 
-It places `opencode` in `~/.opencode/bin/` and adds that to your shell PATH.
-Open a new terminal (or `source ~/.zshrc`) and verify:
+It places `opencode` in `~/.opencode/bin/` and appends that directory to
+your shell PATH by writing an `export` line into `~/.bashrc` or `~/.zshrc`.
+
+Open a new terminal (or `source ~/.bashrc` / `source ~/.zshrc`) and verify:
 
 ```bash
 opencode --version
 ```
+
+> **Heads-up if you're running this in a container, headless server, or any
+> non-interactive shell:** the opencode installer only updates your shell's
+> rc file. Non-interactive shells (systemd services, container exec scripts,
+> sub-shells launched by other tools) do NOT source `~/.bashrc` or
+> `~/.zshrc`, so they won't see `opencode` on PATH. In those environments,
+> add `~/.opencode/bin` to PATH explicitly — for example:
+>
+> ```bash
+> export PATH="$HOME/.opencode/bin:$PATH"
+> ```
+>
+> Or place that export in `/etc/profile.d/opencode.sh` for system-wide
+> coverage. `amplifier-opencode doctor` will flag this with a clear error
+> if opencode isn't on PATH when it runs.
 
 For other install methods (Homebrew, manual download, package managers) see
 [opencode.ai/docs/intro](https://opencode.ai/docs/intro).
