@@ -56,11 +56,20 @@ import httpx
 DEFAULT_BASE_URL = "http://127.0.0.1:9099/v1"
 DEFAULT_API_KEY = "local-dev-secret"
 DEFAULT_WORKSPACE = "opencode"
-DEFAULT_SERVER_READY_TIMEOUT_S = 30.0
+# 2 minutes: covers cold-prep first-launch (amplifier-agent installs 4 provider
+# modules + the bundle's tool/hook modules via git fetch on first invocation,
+# which can take 60-90s on slower networks). Warm boots typically finish in
+# under 5s and exit the poll loop early.
+DEFAULT_SERVER_READY_TIMEOUT_S = 120.0
 DEFAULT_SERVER_PROBE_TIMEOUT_S = 2.0
 DEFAULT_PROVIDER_ID = "amplifier"
 DEFAULT_PROVIDER_NAME = "Amplifier"
 DEFAULT_PROVIDER_NPM = "@ai-sdk/openai-compatible"
+# Opt-in ceiling for the advertised per-model context window. None == forward
+# the backend's value verbatim (default). Set via --max-context / env
+# AMPLIFIER_OPENCODE_MAX_CONTEXT to guard against backend-vs-enforced limit
+# mismatches that overflow the real provider cap (see build_provider_block).
+DEFAULT_MAX_CONTEXT: int | None = None
 
 # Self-update target. ``PACKAGE_NAME`` is the distribution name on PyPI / in
 # ``importlib.metadata``; ``REPO_URL`` is the git remote ``update`` installs
@@ -156,41 +165,46 @@ def build_host_config(state_dir: Path) -> Path:
 # Verified pricing date: 2026-06-21.
 MODEL_PRICING_PER_MILLION: dict[str, dict[str, float]] = {
     # ===== Anthropic =====
-    "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
-    "claude-sonnet-4-6":         {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
-    "claude-opus-4-8":           {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
+    "claude-haiku-4-5-20251001": {
+        "input": 1.0,
+        "output": 5.0,
+        "cache_read": 0.1,
+        "cache_write": 1.25,
+    },
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+    "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     # ===== OpenAI =====
     # GPT-4o
-    "gpt-4o":                    {"input": 2.5,  "output": 10.0,  "cache_read": 1.25},
-    "gpt-4o-mini":               {"input": 0.15, "output": 0.6,   "cache_read": 0.075},
+    "gpt-4o": {"input": 2.5, "output": 10.0, "cache_read": 1.25},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.6, "cache_read": 0.075},
     # GPT-4.1
-    "gpt-4.1":                   {"input": 2.0,  "output": 8.0,   "cache_read": 0.5},
-    "gpt-4.1-mini":              {"input": 0.4,  "output": 1.6,   "cache_read": 0.1},
-    "gpt-4.1-nano":              {"input": 0.1,  "output": 0.4,   "cache_read": 0.025},
+    "gpt-4.1": {"input": 2.0, "output": 8.0, "cache_read": 0.5},
+    "gpt-4.1-mini": {"input": 0.4, "output": 1.6, "cache_read": 0.1},
+    "gpt-4.1-nano": {"input": 0.1, "output": 0.4, "cache_read": 0.025},
     # GPT-5
-    "gpt-5":                     {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5-codex":               {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5-mini":                {"input": 0.25, "output": 2.0,   "cache_read": 0.025},
-    "gpt-5-nano":                {"input": 0.05, "output": 0.4,   "cache_read": 0.005},
-    "gpt-5-pro":                 {"input": 15.0, "output": 120.0},
+    "gpt-5": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5-codex": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5-mini": {"input": 0.25, "output": 2.0, "cache_read": 0.025},
+    "gpt-5-nano": {"input": 0.05, "output": 0.4, "cache_read": 0.005},
+    "gpt-5-pro": {"input": 15.0, "output": 120.0},
     # GPT-5.1
-    "gpt-5.1":                   {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5.1-codex":             {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5.1-codex-max":         {"input": 1.25, "output": 10.0,  "cache_read": 0.125},
-    "gpt-5.1-codex-mini":        {"input": 0.25, "output": 2.0,   "cache_read": 0.025},
+    "gpt-5.1": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5.1-codex": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5.1-codex-max": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
+    "gpt-5.1-codex-mini": {"input": 0.25, "output": 2.0, "cache_read": 0.025},
     # GPT-5.2
-    "gpt-5.2":                   {"input": 1.75, "output": 14.0,  "cache_read": 0.175},
-    "gpt-5.2-codex":             {"input": 1.75, "output": 14.0,  "cache_read": 0.175},
+    "gpt-5.2": {"input": 1.75, "output": 14.0, "cache_read": 0.175},
+    "gpt-5.2-codex": {"input": 1.75, "output": 14.0, "cache_read": 0.175},
     # o-series (reasoning models)
-    "o1":                        {"input": 15.0, "output": 60.0,  "cache_read": 7.5},
-    "o1-pro":                    {"input": 150.0,"output": 600.0},
-    "o3":                        {"input": 2.0,  "output": 8.0,   "cache_read": 0.5},
-    "o3-mini":                   {"input": 1.1,  "output": 4.4,   "cache_read": 0.55},
-    "o3-pro":                    {"input": 20.0, "output": 80.0},
-    "o4-mini":                   {"input": 1.1,  "output": 4.4,   "cache_read": 0.275},
+    "o1": {"input": 15.0, "output": 60.0, "cache_read": 7.5},
+    "o1-pro": {"input": 150.0, "output": 600.0},
+    "o3": {"input": 2.0, "output": 8.0, "cache_read": 0.5},
+    "o3-mini": {"input": 1.1, "output": 4.4, "cache_read": 0.55},
+    "o3-pro": {"input": 20.0, "output": 80.0},
+    "o4-mini": {"input": 1.1, "output": 4.4, "cache_read": 0.275},
     # Embeddings (output is always 0; opencode schema requires both fields)
-    "text-embedding-3-large":    {"input": 0.13, "output": 0.0},
-    "text-embedding-3-small":    {"input": 0.02, "output": 0.0},
+    "text-embedding-3-large": {"input": 0.13, "output": 0.0},
+    "text-embedding-3-small": {"input": 0.02, "output": 0.0},
 }
 
 
@@ -338,6 +352,7 @@ def build_provider_block(
     models: list[dict[str, Any]],
     provider_name: str = DEFAULT_PROVIDER_NAME,
     provider_npm: str = DEFAULT_PROVIDER_NPM,
+    max_context: int | None = None,
 ) -> dict[str, Any]:
     """Transform amplifier-agent's /v1/models into an opencode provider block.
 
@@ -366,7 +381,26 @@ def build_provider_block(
                   uses for context-window warnings. Lifted from
                   amplifier-agent's /v1/models ``limit`` field
                   (originally ``ModelInfo.context_window`` /
-                  ``max_output_tokens``).
+                  ``max_output_tokens``). When ``max_context`` is set, the
+                  ``context`` value is clamped down to that ceiling (see
+                  below).
+
+    Defensive clamp (``max_context``)
+        opencode triggers context compaction near ~90% of the advertised
+        ``limit.context``. If the backend advertises a window larger than
+        the provider will actually honor at request time (e.g. amplifier-
+        agent reporting a 1,000,000-token window for a Claude model whose
+        Anthropic account is not entitled to the 1M-context beta), opencode
+        never compacts in the danger zone and the request is rejected with
+        a hard ``prompt is too long: N > 200000 maximum`` 400.
+
+        ``max_context`` is an opt-in safety net: when set (CLI
+        ``--max-context`` / env ``AMPLIFIER_OPENCODE_MAX_CONTEXT``), every
+        model's advertised context window is capped at this value so
+        opencode compacts before the real enforced limit. Left ``None``
+        (the default) the adapter forwards the backend's value verbatim --
+        the proper fix is for the backend to advertise a window it can
+        honor (tracked upstream in amplifier-module-provider-anthropic).
 
     Note: amplifier-agent's PR #68 ALSO surfaces real per-turn
     ``cost_usd`` on the chat-completions response (telemetry on the
@@ -405,8 +439,14 @@ def build_provider_block(
             and isinstance(limit.get("context"), int)
             and isinstance(limit.get("output"), int)
         ):
+            context = int(limit["context"])
+            # Defensive clamp: cap the advertised context window so opencode
+            # compacts before any backend-vs-enforced limit mismatch overflows
+            # the real provider cap. Opt-in; None == faithful passthrough.
+            if max_context is not None and context > max_context:
+                context = max_context
             entry["limit"] = {
-                "context": int(limit["context"]),
+                "context": context,
                 "output": int(limit["output"]),
             }
 
@@ -532,6 +572,7 @@ def _run_launch(
     amplifier_agent_bin: Path | None,
     provider_id: str,
     opencode_args: tuple[str, ...],
+    max_context: int | None = None,
 ) -> None:
     """The check -> start -> discover -> write -> exec flow."""
     # Resolve the config target: global by default, project-level if --project-dir.
@@ -611,6 +652,7 @@ def _run_launch(
         base_url=base_url,
         api_key=api_key,
         models=models,
+        max_context=max_context,
     )
     config_path = write_opencode_config(config_path, provider_block, provider_id=provider_id)
     scope = "global" if project_dir is None else "project"
@@ -618,11 +660,21 @@ def _run_launch(
 
     # Step 4: exec opencode --------------------------------------------------
     if no_launch:
+        click.secho("[4/4] Configuration complete.", fg="green")
+        click.echo()
         click.secho(
-            f"[4/4] --no-launch given; not exec'ing opencode. "
-            f"cd {launch_dir} && opencode  to enter the TUI.",
-            fg="yellow",
+            "\u2713 opencode is configured to use Amplifier. Pick how you want to drive it:",
+            fg="green",
+            bold=True,
         )
+        click.echo()
+        click.echo("    TUI       run `opencode` in any directory")
+        click.echo(
+            "    Desktop   open the opencode desktop app \u2014 it picks up the global config"
+        )
+        click.echo('    Headless  opencode run "your prompt here"')
+        click.echo()
+        click.echo("To jump straight into the TUI next time: amplifier-opencode launch")
         return
 
     click.secho(f"[4/4] Launching opencode in {launch_dir}", fg="cyan")
@@ -967,16 +1019,20 @@ def _run_update(*, ref: str, force: bool) -> int:
 )
 @click.pass_context
 def main(ctx: click.Context, base_url: str, api_key: str) -> None:
-    """Launch opencode with auto-discovered amplifier-agent models.
+    """Bridge amplifier-agent and opencode: set up the server + config,
+    then tell you how to drive opencode.
 
     Default action (when no subcommand is given): check the server, start
     it if needed, discover models from ``/v1/models``, write
-    ``opencode.json``, then ``exec`` opencode.
+    ``opencode.json``, and report success. Does NOT exec opencode --
+    opencode has a TUI, a Desktop app, and a headless mode; pick which
+    one to drive after the bridge is ready.
 
     \b
     Subcommands:
 
-      launch   Same as default; explicit form for clarity in scripts.
+      prepare  Same as default; explicit form for clarity in scripts.
+      launch   Same setup + exec the opencode TUI in one step.
                Accepts pass-through args after ``--``.
       doctor   Health checks for all prerequisites (binaries, server,
                credentials, config). No side effects.
@@ -985,12 +1041,12 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
 
     \b
     Examples:
-
-      amplifier-opencode
-      amplifier-opencode doctor
+    
+      amplifier-opencode                 # set up the bridge, then run `opencode`
+      amplifier-opencode launch          # set up + jump straight into the TUI
+      amplifier-opencode doctor          # what's wrong?
       amplifier-opencode update
       amplifier-opencode --base-url http://localhost:9099/v1
-      amplifier-opencode launch --no-launch
       amplifier-opencode launch -- run "hello"
     """
     ctx.ensure_object(dict)
@@ -998,8 +1054,10 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
     ctx.obj["api_key"] = api_key
 
     if ctx.invoked_subcommand is None:
-        # Default action: invoke the launch subcommand with defaults.
-        ctx.invoke(launch)
+        # Default action: prepare the bridge without exec'ing opencode.
+        # Users explicitly pick how to drive opencode (TUI / Desktop /
+        # headless) after this completes.
+        ctx.invoke(prepare)
 
 
 @main.command("launch")
@@ -1057,6 +1115,20 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
     show_default=True,
     help="Provider ID under opencode.json's provider.<id> key.",
 )
+@click.option(
+    "--max-context",
+    type=click.IntRange(min=1),
+    default=DEFAULT_MAX_CONTEXT,
+    envvar="AMPLIFIER_OPENCODE_MAX_CONTEXT",
+    show_default="(forward backend value)",
+    help=(
+        "Clamp every model's advertised context window to at most this many "
+        "tokens. Use to guard against a backend advertising a window larger "
+        "than the provider will honor (e.g. a Claude 1M window without the "
+        "1M-context beta entitlement), which makes opencode skip compaction "
+        "and overflow the real cap. Default: forward the backend value."
+    ),
+)
 @click.argument("opencode_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def launch(
@@ -1068,6 +1140,7 @@ def launch(
     no_launch: bool,
     amplifier_agent_bin: Path | None,
     provider_id: str,
+    max_context: int | None,
     opencode_args: tuple[str, ...],
 ) -> None:
     """Discover models, write opencode.json, exec opencode.
@@ -1084,7 +1157,106 @@ def launch(
         no_launch=no_launch,
         amplifier_agent_bin=amplifier_agent_bin,
         provider_id=provider_id,
+        max_context=max_context,
         opencode_args=opencode_args,
+    )
+
+
+@main.command("prepare")
+@click.option(
+    "--workspace",
+    default=DEFAULT_WORKSPACE,
+    envvar="AMPLIFIER_AGENT_WORKSPACE",
+    show_default=True,
+    help="amplifier-agent workspace name. Only used when starting the server.",
+)
+@click.option(
+    "--host-config",
+    "host_config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    envvar="AMPLIFIER_AGENT_HOST_CONFIG",
+    help=(
+        "Path to a host_config.json to use verbatim. "
+        "Overrides the auto-generated config built from your env vars. "
+        "Only used when starting the server."
+    ),
+)
+@click.option(
+    "--project-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    show_default="(use global config)",
+    help=(
+        "Write opencode.json into THIS directory instead of the global "
+        "opencode config. The global path "
+        "(~/.config/opencode/opencode.jsonc) is the default so the adapter "
+        "is available from every directory."
+    ),
+)
+@click.option(
+    "--no-start",
+    is_flag=True,
+    help="Do NOT auto-start amplifier-agent. Fail loudly if /v1/models is unreachable.",
+)
+@click.option(
+    "--amplifier-agent-bin",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    envvar="AMPLIFIER_AGENT_BIN",
+    help="Override the amplifier-agent binary to use when starting the server.",
+)
+@click.option(
+    "--provider-id",
+    default=DEFAULT_PROVIDER_ID,
+    show_default=True,
+    help="Provider ID under opencode.json's provider.<id> key.",
+)
+@click.option(
+    "--max-context",
+    type=click.IntRange(min=1),
+    default=DEFAULT_MAX_CONTEXT,
+    envvar="AMPLIFIER_OPENCODE_MAX_CONTEXT",
+    show_default="(forward backend value)",
+    help=(
+        "Clamp every model's advertised context window to at most this many "
+        "tokens. Use to guard against a backend advertising a window larger "
+        "than the provider will honor (e.g. a Claude 1M window without the "
+        "1M-context beta entitlement), which makes opencode skip compaction "
+        "and overflow the real cap. Default: forward the backend value."
+    ),
+)
+@click.pass_context
+def prepare(
+    ctx: click.Context,
+    workspace: str,
+    host_config: Path | None,
+    project_dir: Path | None,
+    no_start: bool,
+    amplifier_agent_bin: Path | None,
+    provider_id: str,
+    max_context: int | None,
+) -> None:
+    """Set up the bridge: start the server, discover models, write opencode.json.
+
+    Does NOT exec opencode -- opencode has a TUI, a Desktop app, and a
+    headless mode; pick which one to drive after the bridge is ready.
+
+    Use ``amplifier-opencode launch`` if you want to set up AND jump into
+    the opencode TUI in one step.
+    """
+    _run_launch(
+        base_url=ctx.obj["base_url"],
+        api_key=ctx.obj["api_key"],
+        workspace=workspace,
+        host_config=host_config,
+        project_dir=project_dir,
+        no_start=no_start,
+        no_launch=True,
+        amplifier_agent_bin=amplifier_agent_bin,
+        provider_id=provider_id,
+        max_context=max_context,
+        opencode_args=(),
     )
 
 
