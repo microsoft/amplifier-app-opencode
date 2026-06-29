@@ -65,6 +65,11 @@ DEFAULT_SERVER_PROBE_TIMEOUT_S = 2.0
 DEFAULT_PROVIDER_ID = "amplifier"
 DEFAULT_PROVIDER_NAME = "Amplifier"
 DEFAULT_PROVIDER_NPM = "@ai-sdk/openai-compatible"
+# Opt-in ceiling for the advertised per-model context window. None == forward
+# the backend's value verbatim (default). Set via --max-context / env
+# AMPLIFIER_OPENCODE_MAX_CONTEXT to guard against backend-vs-enforced limit
+# mismatches that overflow the real provider cap (see build_provider_block).
+DEFAULT_MAX_CONTEXT: int | None = None
 
 SERVER_LOG_PATH = Path("/tmp/amplifier-agent.log")
 PID_FILE = Path("/tmp/amplifier-opencode-agent.pid")
@@ -341,6 +346,7 @@ def build_provider_block(
     models: list[dict[str, Any]],
     provider_name: str = DEFAULT_PROVIDER_NAME,
     provider_npm: str = DEFAULT_PROVIDER_NPM,
+    max_context: int | None = None,
 ) -> dict[str, Any]:
     """Transform amplifier-agent's /v1/models into an opencode provider block.
 
@@ -369,7 +375,26 @@ def build_provider_block(
                   uses for context-window warnings. Lifted from
                   amplifier-agent's /v1/models ``limit`` field
                   (originally ``ModelInfo.context_window`` /
-                  ``max_output_tokens``).
+                  ``max_output_tokens``). When ``max_context`` is set, the
+                  ``context`` value is clamped down to that ceiling (see
+                  below).
+
+    Defensive clamp (``max_context``)
+        opencode triggers context compaction near ~90% of the advertised
+        ``limit.context``. If the backend advertises a window larger than
+        the provider will actually honor at request time (e.g. amplifier-
+        agent reporting a 1,000,000-token window for a Claude model whose
+        Anthropic account is not entitled to the 1M-context beta), opencode
+        never compacts in the danger zone and the request is rejected with
+        a hard ``prompt is too long: N > 200000 maximum`` 400.
+
+        ``max_context`` is an opt-in safety net: when set (CLI
+        ``--max-context`` / env ``AMPLIFIER_OPENCODE_MAX_CONTEXT``), every
+        model's advertised context window is capped at this value so
+        opencode compacts before the real enforced limit. Left ``None``
+        (the default) the adapter forwards the backend's value verbatim --
+        the proper fix is for the backend to advertise a window it can
+        honor (tracked upstream in amplifier-module-provider-anthropic).
 
     Note: amplifier-agent's PR #68 ALSO surfaces real per-turn
     ``cost_usd`` on the chat-completions response (telemetry on the
@@ -408,8 +433,14 @@ def build_provider_block(
             and isinstance(limit.get("context"), int)
             and isinstance(limit.get("output"), int)
         ):
+            context = int(limit["context"])
+            # Defensive clamp: cap the advertised context window so opencode
+            # compacts before any backend-vs-enforced limit mismatch overflows
+            # the real provider cap. Opt-in; None == faithful passthrough.
+            if max_context is not None and context > max_context:
+                context = max_context
             entry["limit"] = {
-                "context": int(limit["context"]),
+                "context": context,
                 "output": int(limit["output"]),
             }
 
@@ -535,6 +566,7 @@ def _run_launch(
     amplifier_agent_bin: Path | None,
     provider_id: str,
     opencode_args: tuple[str, ...],
+    max_context: int | None = None,
 ) -> None:
     """The check -> start -> discover -> write -> exec flow."""
     # Resolve the config target: global by default, project-level if --project-dir.
@@ -614,6 +646,7 @@ def _run_launch(
         base_url=base_url,
         api_key=api_key,
         models=models,
+        max_context=max_context,
     )
     config_path = write_opencode_config(config_path, provider_block, provider_id=provider_id)
     scope = "global" if project_dir is None else "project"
@@ -972,6 +1005,20 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
     show_default=True,
     help="Provider ID under opencode.json's provider.<id> key.",
 )
+@click.option(
+    "--max-context",
+    type=click.IntRange(min=1),
+    default=DEFAULT_MAX_CONTEXT,
+    envvar="AMPLIFIER_OPENCODE_MAX_CONTEXT",
+    show_default="(forward backend value)",
+    help=(
+        "Clamp every model's advertised context window to at most this many "
+        "tokens. Use to guard against a backend advertising a window larger "
+        "than the provider will honor (e.g. a Claude 1M window without the "
+        "1M-context beta entitlement), which makes opencode skip compaction "
+        "and overflow the real cap. Default: forward the backend value."
+    ),
+)
 @click.argument("opencode_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def launch(
@@ -983,6 +1030,7 @@ def launch(
     no_launch: bool,
     amplifier_agent_bin: Path | None,
     provider_id: str,
+    max_context: int | None,
     opencode_args: tuple[str, ...],
 ) -> None:
     """Discover models, write opencode.json, exec opencode.
@@ -999,6 +1047,7 @@ def launch(
         no_launch=no_launch,
         amplifier_agent_bin=amplifier_agent_bin,
         provider_id=provider_id,
+        max_context=max_context,
         opencode_args=opencode_args,
     )
 
@@ -1053,6 +1102,20 @@ def launch(
     show_default=True,
     help="Provider ID under opencode.json's provider.<id> key.",
 )
+@click.option(
+    "--max-context",
+    type=click.IntRange(min=1),
+    default=DEFAULT_MAX_CONTEXT,
+    envvar="AMPLIFIER_OPENCODE_MAX_CONTEXT",
+    show_default="(forward backend value)",
+    help=(
+        "Clamp every model's advertised context window to at most this many "
+        "tokens. Use to guard against a backend advertising a window larger "
+        "than the provider will honor (e.g. a Claude 1M window without the "
+        "1M-context beta entitlement), which makes opencode skip compaction "
+        "and overflow the real cap. Default: forward the backend value."
+    ),
+)
 @click.pass_context
 def prepare(
     ctx: click.Context,
@@ -1062,6 +1125,7 @@ def prepare(
     no_start: bool,
     amplifier_agent_bin: Path | None,
     provider_id: str,
+    max_context: int | None,
 ) -> None:
     """Set up the bridge: start the server, discover models, write opencode.json.
 
@@ -1081,6 +1145,7 @@ def prepare(
         no_launch=True,
         amplifier_agent_bin=amplifier_agent_bin,
         provider_id=provider_id,
+        max_context=max_context,
         opencode_args=(),
     )
 

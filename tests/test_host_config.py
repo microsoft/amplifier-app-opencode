@@ -16,7 +16,12 @@ from unittest.mock import MagicMock
 import pytest
 from click.testing import CliRunner
 
-from amplifier_app_opencode.cli import KNOWN_PROVIDER_ENV_VARS, build_host_config, main
+from amplifier_app_opencode.cli import (
+    KNOWN_PROVIDER_ENV_VARS,
+    build_host_config,
+    build_provider_block,
+    main,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -132,6 +137,95 @@ def test_build_host_config_handles_azure_alternate_env_var(
 
     data = json.loads(result.read_text(encoding="utf-8"))
     assert "azure-openai" in data["providers"]
+
+
+# ---------------------------------------------------------------------------
+# build_provider_block() context-clamp unit tests
+# ---------------------------------------------------------------------------
+
+
+def _model(model_id: str, context: int, output: int = 64000) -> dict:
+    return {"id": model_id, "limit": {"context": context, "output": output}}
+
+
+def test_provider_block_forwards_context_verbatim_when_no_clamp() -> None:
+    """Default (max_context=None) forwards the backend context window unchanged."""
+    block = build_provider_block(
+        base_url="http://x/v1",
+        api_key="k",
+        models=[_model("claude-sonnet-4-6", 1_000_000)],
+    )
+    assert block["models"]["claude-sonnet-4-6"]["limit"]["context"] == 1_000_000
+
+
+def test_provider_block_clamps_context_over_ceiling() -> None:
+    """A context window above max_context is capped to the ceiling."""
+    block = build_provider_block(
+        base_url="http://x/v1",
+        api_key="k",
+        models=[_model("claude-sonnet-4-6", 1_000_000)],
+        max_context=200_000,
+    )
+    limit = block["models"]["claude-sonnet-4-6"]["limit"]
+    assert limit["context"] == 200_000
+    # output is never touched by the context clamp
+    assert limit["output"] == 64000
+
+
+def test_provider_block_leaves_context_below_ceiling_untouched() -> None:
+    """A context window at or below max_context is left as-is."""
+    block = build_provider_block(
+        base_url="http://x/v1",
+        api_key="k",
+        models=[_model("claude-haiku-4-5", 200_000)],
+        max_context=200_000,
+    )
+    assert block["models"]["claude-haiku-4-5"]["limit"]["context"] == 200_000
+
+
+def test_provider_block_clamp_applies_per_model() -> None:
+    """Clamp is applied independently to each model; small windows are preserved."""
+    block = build_provider_block(
+        base_url="http://x/v1",
+        api_key="k",
+        models=[
+            _model("claude-opus-4-8", 1_000_000),
+            _model("gpt-5-mini", 128_000),
+        ],
+        max_context=200_000,
+    )
+    assert block["models"]["claude-opus-4-8"]["limit"]["context"] == 200_000
+    assert block["models"]["gpt-5-mini"]["limit"]["context"] == 128_000
+
+
+def test_max_context_cli_option_clamps_written_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`prepare --max-context` clamps the context window in the written config."""
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    _patch_launch_deps(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        "amplifier_app_opencode.cli.fetch_models",
+        lambda *a, **kw: [_model("claude-sonnet-4-6", 1_000_000)],
+    )
+    captured: dict = {}
+
+    def _capture_write(config_path, provider, **kwargs):
+        captured["provider"] = provider
+        return config_path
+
+    monkeypatch.setattr(
+        "amplifier_app_opencode.cli.write_opencode_config", _capture_write
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["prepare", "--max-context", "200000"])
+
+    assert result.exit_code == 0, result.output
+    ctx = captured["provider"]["models"]["claude-sonnet-4-6"]["limit"]["context"]
+    assert ctx == 200_000
 
 
 # ---------------------------------------------------------------------------
