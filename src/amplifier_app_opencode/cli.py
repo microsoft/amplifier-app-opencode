@@ -71,6 +71,12 @@ DEFAULT_PROVIDER_NPM = "@ai-sdk/openai-compatible"
 # mismatches that overflow the real provider cap (see build_provider_block).
 DEFAULT_MAX_CONTEXT: int | None = None
 
+# Self-update target. ``PACKAGE_NAME`` is the distribution name on PyPI / in
+# ``importlib.metadata``; ``REPO_URL`` is the git remote ``update`` installs
+# from when the user runs ``amplifier-opencode update``.
+PACKAGE_NAME = "amplifier-app-opencode"
+REPO_URL = "https://github.com/microsoft/amplifier-app-opencode.git"
+
 SERVER_LOG_PATH = Path("/tmp/amplifier-agent.log")
 PID_FILE = Path("/tmp/amplifier-opencode-agent.pid")
 
@@ -888,6 +894,107 @@ def _run_doctor(base_url: str, api_key: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Self-update implementation
+# ---------------------------------------------------------------------------
+
+
+def _get_install_info() -> dict[str, Any]:
+    """Detect how amplifier-app-opencode was installed via PEP 610 direct_url.json.
+
+    Returns a dict with:
+      - ``source``  one of ``"git"``, ``"editable"``, ``"pypi"``, ``"unknown"``
+      - ``version`` distribution version, or ``"?"`` when not discoverable
+      - ``commit``  git commit SHA when ``source == "git"``, else ``None``
+      - ``url``     git remote URL when ``source == "git"``, else ``None``
+
+    ``update`` uses this to (a) report the current install on screen and
+    (b) refuse to clobber an editable (``-e``) install unless ``--force``.
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    info: dict[str, Any] = {
+        "source": "unknown",
+        "version": "?",
+        "commit": None,
+        "url": None,
+    }
+    try:
+        dist = distribution(PACKAGE_NAME)
+        info["version"] = dist.metadata["Version"]
+        du_text = dist.read_text("direct_url.json")
+        if du_text:
+            du = json.loads(du_text)
+            if "vcs_info" in du:
+                info["source"] = "git"
+                info["commit"] = du["vcs_info"].get("commit_id", "") or None
+                info["url"] = du.get("url", "") or None
+            elif (du.get("dir_info") or {}).get("editable"):
+                info["source"] = "editable"
+            else:
+                info["source"] = "unknown"
+        else:
+            # No direct_url.json => almost certainly installed from a normal
+            # PyPI release (or unpacked sdist with no provenance metadata).
+            info["source"] = "pypi"
+    except PackageNotFoundError:
+        pass
+    return info
+
+
+def _run_update(*, ref: str, force: bool) -> int:
+    """Reinstall amplifier-app-opencode from a git ref via ``uv tool install --force``.
+
+    Prints the current install metadata, then shells out to ``uv tool
+    install --force git+{REPO_URL}@{ref}``. Refuses to clobber editable
+    installs unless ``force=True`` -- a developer working on a local
+    checkout almost certainly does not want their dev tree silently
+    replaced with a release build.
+    """
+    info = _get_install_info()
+    click.secho(
+        f"Current install: {PACKAGE_NAME} {info['version']} (via {info['source']})",
+        fg="cyan",
+    )
+    if info["source"] == "git" and info.get("commit"):
+        click.secho(f"  commit: {info['commit'][:12]}", fg="cyan")
+
+    if info["source"] == "editable" and not force:
+        raise click.ClickException(
+            "Refusing to overwrite an editable install. "
+            "Pass --force to clobber it with the latest "
+            f"{ref}, or update your dev checkout manually with `git pull`."
+        )
+
+    uv = shutil.which("uv")
+    if not uv:
+        raise click.ClickException(
+            "uv binary not found in PATH. Install uv (https://docs.astral.sh/uv/) and re-run."
+        )
+
+    spec = f"git+{REPO_URL}@{ref}"
+    click.secho(f"Installing {spec} ...", fg="cyan")
+    # We deliberately stream uv's own output to the user's terminal rather
+    # than capturing it -- uv prints rich progress (resolve, download,
+    # link) the user expects to see, and any failure mode is easier to
+    # debug when the original uv error stays visible.
+    result = subprocess.run([uv, "tool", "install", "--force", spec])
+    if result.returncode != 0:
+        raise click.ClickException(
+            f"`uv tool install --force {spec}` exited with code "
+            f"{result.returncode}. See uv's output above for details."
+        )
+
+    click.echo()
+    click.secho(
+        f"✓ amplifier-opencode updated from {ref}.",
+        fg="green",
+        bold=True,
+    )
+    click.echo("  Run `amplifier-opencode doctor` to verify, or launch as usual.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Click surface (subcommand-shaped, default = launch)
 # ---------------------------------------------------------------------------
 
@@ -929,13 +1036,16 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
                Accepts pass-through args after ``--``.
       doctor   Health checks for all prerequisites (binaries, server,
                credentials, config). No side effects.
+      update   Reinstall amplifier-opencode from the latest main of
+               microsoft/amplifier-app-opencode via uv.
 
     \b
     Examples:
-
+    
       amplifier-opencode                 # set up the bridge, then run `opencode`
       amplifier-opencode launch          # set up + jump straight into the TUI
       amplifier-opencode doctor          # what's wrong?
+      amplifier-opencode update
       amplifier-opencode --base-url http://localhost:9099/v1
       amplifier-opencode launch -- run "hello"
     """
@@ -1160,6 +1270,43 @@ def doctor(ctx: click.Context) -> None:
     Exits 0 when all required checks pass; exits 1 on any FAIL.
     """
     sys.exit(_run_doctor(ctx.obj["base_url"], ctx.obj["api_key"]))
+
+
+@main.command("update")
+@click.option(
+    "--ref",
+    default="main",
+    show_default=True,
+    help="Git ref (branch, tag, or commit) of amplifier-app-opencode to install.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help=(
+        "Overwrite an editable (-e) install. Without this flag, editable "
+        "installs are preserved so a dev checkout is not silently replaced."
+    ),
+)
+def update(ref: str, force: bool) -> None:
+    """Pull in and install the latest amplifier-app-opencode from GitHub.
+
+    Reinstalls the ``amplifier-opencode`` binary by shelling out to
+    ``uv tool install --force git+<repo>@<ref>``. By default ``<ref>`` is
+    ``main``, so this command brings you to the latest unreleased work
+    on the upstream repository.
+
+    \b
+    Examples:
+
+      amplifier-opencode update                    # latest main
+      amplifier-opencode update --ref v0.2.0       # pin to a tag
+      amplifier-opencode update --ref some-branch  # try a feature branch
+      amplifier-opencode update --force            # clobber editable install
+
+    After updating, ``amplifier-opencode doctor`` will report the new
+    version under the (now-implicit) install metadata.
+    """
+    sys.exit(_run_update(ref=ref, force=force))
 
 
 # Allow ``python -m amplifier_app_opencode`` --------------------------------
