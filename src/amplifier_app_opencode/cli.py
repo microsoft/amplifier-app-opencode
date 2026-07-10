@@ -100,16 +100,86 @@ _ALL_PROVIDER_ENV_VARS: tuple[str, ...] = tuple(
 
 
 # ---------------------------------------------------------------------------
+# Credentials file reader (mirrors amplifier-agent's auth module)
+# ---------------------------------------------------------------------------
+
+
+def _credentials_file_path() -> Path:
+    """Return the canonical path to amplifier-agent's credentials file.
+
+    ``~/.amplifier-agent/credentials.json`` by default; honours
+    ``AMPLIFIER_AGENT_HOME`` the same way amplifier-agent does
+    (see ``amplifier_agent_lib.persistence.amplifier_agent_home``).
+    """
+    override = os.environ.get("AMPLIFIER_AGENT_HOME")
+    if override:
+        return Path(override).expanduser() / "credentials.json"
+    home = Path(os.environ.get("HOME", os.path.expanduser("~")))
+    return home / ".amplifier-agent" / "credentials.json"
+
+
+def _read_credentials_file() -> dict[str, str]:
+    """Read provider API keys from amplifier-agent's credentials file.
+
+    Returns a dict mapping provider ID to its stored ``api_key`` for every
+    provider that has a non-empty key on file.  Fully tolerant: returns
+    ``{}`` on missing file, unreadable JSON, or unexpected schema.
+
+    File schema (v1, as defined in ``amplifier_agent_cli.admin.auth``)::
+
+        {"version": 1, "providers": {"anthropic": {"api_key": "sk-ant-..."}}}
+
+    Legacy flat-dict shape (no ``version`` key) is handled the same way
+    amplifier-agent does: treat the whole body as the ``providers`` dict.
+    """
+    path = _credentials_file_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    # Legacy shape (flat dict of provider->key) -> treat as providers dict.
+    if "providers" not in data:
+        providers = data
+    else:
+        providers = data.get("providers") or {}
+
+    if not isinstance(providers, dict):
+        return {}
+
+    result: dict[str, str] = {}
+    for pid, entry in providers.items():
+        if isinstance(entry, dict):
+            key = entry.get("api_key", "")
+        elif isinstance(entry, str):
+            # Legacy flat shape: {"anthropic": "sk-ant-..."}
+            key = entry
+        else:
+            continue
+        if key:
+            result[pid] = key
+    return result
+
+
+# ---------------------------------------------------------------------------
 # host_config.json auto-generation
 # ---------------------------------------------------------------------------
 
 
 def build_host_config(state_dir: Path) -> Path:
-    """Generate a host_config.json declaring every provider whose creds are in env.
+    """Generate a host_config.json declaring every provider with credentials.
 
-    Probes :data:`KNOWN_PROVIDER_ENV_VARS` and includes each provider whose env
-    var is set. Writes ``host_config.json`` into ``state_dir`` (creating the
-    directory at mode 0700 if needed) with mode 0600. Returns the path.
+    Checks two credential sources in the same order amplifier-agent uses:
+
+    1. Environment variables (:data:`KNOWN_PROVIDER_ENV_VARS`)
+    2. ``~/.amplifier-agent/credentials.json`` (set via ``amplifier-agent auth set``)
+
+    Writes ``host_config.json`` into ``state_dir`` (creating the directory at
+    mode 0700 if needed) with mode 0600.  Returns the path.
 
     Raises :class:`click.ClickException` if no providers have credentials; the
     message lists every env var the user could set.
@@ -119,18 +189,18 @@ def build_host_config(state_dir: Path) -> Path:
     per-provider config overrides should write their own host_config.json
     and pass ``--host-config PATH``.
     """
-    providers = {
-        pid: {}
-        for pid, env_vars in KNOWN_PROVIDER_ENV_VARS.items()
-        if any(os.environ.get(v) for v in env_vars)
-    }
+    file_creds = _read_credentials_file()
+    providers: dict[str, dict[str, Any]] = {}
+    for pid, env_vars in KNOWN_PROVIDER_ENV_VARS.items():
+        if any(os.environ.get(v) for v in env_vars) or file_creds.get(pid):
+            providers[pid] = {}
 
     if not providers:
         raise click.ClickException(
             "No provider credentials found. Set at least one of: "
             + ", ".join(_ALL_PROVIDER_ENV_VARS)
-            + "\n\n"
-            + "Or write your own host_config.json and pass --host-config PATH."
+            + "\n\nOr run: amplifier-agent auth set <provider> <key>"
+            + "\nOr write your own host_config.json and pass --host-config PATH."
         )
 
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -749,14 +819,17 @@ def _check_amplifier_agent_server(base_url: str, api_key: str) -> tuple[str, str
 
 
 def _provider_section_lines() -> tuple[list[str], bool]:
-    """Build per-provider env-var status lines for the doctor output.
+    """Build per-provider credential status lines for the doctor output.
+
+    Checks both environment variables and amplifier-agent's credentials file,
+    matching the resolution order used by ``build_host_config`` and by
+    amplifier-agent itself (env wins, file is fallback).
 
     Returns ``(lines, failed)`` where ``failed`` is True when zero providers
     have credentials (i.e. ``launch`` would abort with a ClickException).
-
-    The returned lines include the "Providers:" header, one line per provider
-    with a ✓/✗ indicator, a blank line, and a summary line.
     """
+    file_creds = _read_credentials_file()
+
     lines: list[str] = []
     lines.append("  Providers:")
 
@@ -767,6 +840,12 @@ def _provider_section_lines() -> tuple[list[str], bool]:
         found_var = next((v for v in env_vars if os.environ.get(v)), None)
         if found_var:
             lines.append(f"    \u2713 {found_var} set \u2192 {provider_id} provider will be served")
+            available.append(provider_id)
+        elif file_creds.get(provider_id):
+            lines.append(
+                f"    \u2713 {provider_id} credentials found in credentials.json"
+                f" \u2192 {provider_id} provider will be served"
+            )
             available.append(provider_id)
         else:
             primary_var = env_vars[0]
@@ -795,6 +874,7 @@ def _provider_section_lines() -> tuple[list[str], bool]:
             "    \u2192 No provider credentials found. Set at least one of: "
             + ", ".join(_ALL_PROVIDER_ENV_VARS)
         )
+        lines.append("    \u2192 Or run: amplifier-agent auth set <provider> <key>")
         lines.append("    \u2192 Or write your own host_config.json and pass --host-config PATH.")
         failed = True
 
@@ -1041,7 +1121,7 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
 
     \b
     Examples:
-    
+
       amplifier-opencode                 # set up the bridge, then run `opencode`
       amplifier-opencode launch          # set up + jump straight into the TUI
       amplifier-opencode doctor          # what's wrong?
