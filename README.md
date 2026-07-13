@@ -168,9 +168,12 @@ unchanged.
 
 ## Provider Credentials
 
-amplifier-opencode auto-detects which AI provider you have credentials for
-and configures amplifier-agent to serve those providers. Set one or more of
-the following environment variables before running `amplifier-opencode launch`:
+amplifier-opencode itself does no provider detection. `amplifier-agent serve`
+auto-enables every provider whose credentials resolve (env var, or
+`~/.amplifier-agent/credentials.json` via `amplifier-agent auth set`) whenever
+you don't pass it an explicit `--config`. Set one or more of the following
+environment variables (or run `amplifier-agent auth set`) before running
+`amplifier-opencode launch`:
 
 | Provider | Env var |
 |---|---|
@@ -179,13 +182,15 @@ the following environment variables before running `amplifier-opencode launch`:
 | Azure OpenAI | `AZURE_OPENAI_API_KEY` or `AZURE_OPENAI_KEY` |
 | Ollama (local models) | `OLLAMA_HOST` |
 
-Run `amplifier-opencode doctor` to see which providers will be available.
+Run `amplifier-opencode doctor` to see which providers amplifier-agent will
+actually serve (it shells out to `amplifier-agent providers list --json`).
 
 ### Advanced: custom host_config.json
 
 If you want fine-grained control (custom MCP servers, approval policies,
 per-provider config overrides), write your own `host_config.json` and pass
-it with `--host-config`:
+it with `--host-config`. amplifier-opencode passes it straight through to
+`amplifier-agent serve --config`:
 
 ```bash
 amplifier-opencode launch --host-config /path/to/host_config.json
@@ -300,9 +305,14 @@ amplifier-opencode doctor
   [ OK ]  amplifier-agent     amplifier-agent found at /Users/you/.local/bin/amplifier-agent
   [ OK ]  opencode            opencode found at /Users/you/.opencode/bin/opencode
   [ OK ]  server              amplifier-agent server running at http://127.0.0.1:9099/v1
-  [ OK ]  credentials         Credentials available (env: anthropic=ANTHROPIC_API_KEY)
   [ OK ]  opencode config     opencode config has provider.amplifier with 3 models
   [ OK ]  live models         Discovered 3 model(s): claude-haiku-4-5-20251001, ...
+
+  Providers (via `amplifier-agent providers list`):
+    ✓ anthropic resolvable (source=env) → will be served
+    ✗ openai not resolvable → set OPENAI_API_KEY or run `amplifier-agent auth set openai <key>` to enable it
+
+    → 1 provider will be auto-enabled on launch (anthropic)
 
 All required checks passed.
 ```
@@ -315,7 +325,8 @@ Common FAILs and their fix:
 |---|---|
 | `amplifier-agent not on PATH` | Re-run the install one-liner above, then open a new terminal |
 | `opencode not on PATH` | `curl -fsSL https://opencode.ai/install \| bash` (then open a new terminal) |
-| `No provider credentials found` | Export `ANTHROPIC_API_KEY`, OR run `amplifier-agent auth set anthropic <key>` |
+| `No provider credentials resolvable` | Export `ANTHROPIC_API_KEY`, OR run `amplifier-agent auth set anthropic <key>` |
+| `Could not run \`amplifier-agent providers list --json\`` | Install/upgrade amplifier-agent so the doctor command can query it |
 | `opencode config ... is malformed JSON` | Open `~/.config/opencode/opencode.jsonc`, fix or delete it, retry |
 
 ---
@@ -340,7 +351,7 @@ Discover models, write opencode.json, exec opencode. Run when no subcommand is g
 | Flag | Env var | Default | Purpose |
 |---|---|---|---|
 | `--workspace` | `AMPLIFIER_AGENT_WORKSPACE` | `opencode` | Server-side workspace name (only used when starting the server) |
-| `--host-config` | `AMPLIFIER_AGENT_HOST_CONFIG` | — | Path to a host_config.json to use verbatim; overrides auto-generated config (only used when starting the server) |
+| `--host-config` | `AMPLIFIER_AGENT_HOST_CONFIG` | — | Path to a host_config.json passed to `amplifier-agent serve --config`; omitted entirely when unset, relying on amplifier-agent's auto-enable (only used when starting the server) |
 | `--project-dir` | — | (use global) | Write opencode.json into this directory instead of global config |
 | `--no-start` | — | false | Don't auto-start amplifier-agent; require server already up |
 | `--no-launch` | — | false | Don't exec opencode; just write the config |
