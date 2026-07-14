@@ -1,143 +1,25 @@
-"""Tests for auto-generated host_config.json and related CLI changes.
+"""Tests for CLI host-config pass-through, provider-block clamping, and doctor.
 
 Covers:
-  - build_host_config() unit tests
-  - launch command integration (config resolution, --host-config flag)
-  - doctor command provider section
+  - launch/prepare pass ``--host-config`` through verbatim (or omit it
+    entirely) rather than auto-generating one from env vars -- amplifier-agent
+    auto-enables every provider whose credentials resolve when no explicit
+    ``--config`` providers block is given.
+  - build_provider_block() context-clamp unit tests
+  - doctor command provider section (delegates to
+    ``amplifier-agent providers list --json``)
 """
 
 from __future__ import annotations
 
 import json
-import stat
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
 
-from amplifier_app_opencode.cli import (
-    KNOWN_PROVIDER_ENV_VARS,
-    build_host_config,
-    build_provider_block,
-    main,
-)
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-_ALL_ENV_VARS = {v for vs in KNOWN_PROVIDER_ENV_VARS.values() for v in vs}
-
-
-def _clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove every provider env var from the environment."""
-    for var in _ALL_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
-
-
-# ---------------------------------------------------------------------------
-# build_host_config() unit tests
-# ---------------------------------------------------------------------------
-
-
-def test_build_host_config_writes_anthropic_when_env_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-
-    state_dir = tmp_path / "state"
-    result = build_host_config(state_dir)
-
-    assert result == state_dir / "host_config.json"
-    data = json.loads(result.read_text(encoding="utf-8"))
-    assert list(data["providers"].keys()) == ["anthropic"]
-
-
-def test_build_host_config_writes_all_four_when_all_env_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
-    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "az-test")
-    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
-
-    state_dir = tmp_path / "state"
-    result = build_host_config(state_dir)
-
-    data = json.loads(result.read_text(encoding="utf-8"))
-    assert set(data["providers"].keys()) == {"anthropic", "openai", "azure-openai", "ollama"}
-
-
-def test_build_host_config_raises_when_no_creds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_provider_env(monkeypatch)
-
-    import click
-
-    state_dir = tmp_path / "state"
-    with pytest.raises(click.ClickException) as exc_info:
-        build_host_config(state_dir)
-
-    msg = str(exc_info.value.format_message())
-    assert "Set at least one of" in msg
-    # Every env var name must appear in the error message.
-    for var in _ALL_ENV_VARS:
-        assert var in msg
-
-
-def test_build_host_config_creates_state_dir_with_0700(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-
-    state_dir = tmp_path / "new" / "nested" / "state"
-    result = build_host_config(state_dir)
-
-    # Directory must exist with mode 0700.
-    dir_mode = stat.S_IMODE(state_dir.stat().st_mode)
-    assert dir_mode == 0o700, f"state_dir mode is {oct(dir_mode)}, expected 0700"
-
-    # File must exist with mode 0600.
-    file_mode = stat.S_IMODE(result.stat().st_mode)
-    assert file_mode == 0o600, f"host_config.json mode is {oct(file_mode)}, expected 0600"
-
-
-def test_build_host_config_overwrites_existing_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-
-    state_dir = tmp_path / "state"
-    state_dir.mkdir(parents=True)
-    existing = state_dir / "host_config.json"
-    existing.write_text(json.dumps({"providers": {"openai": {}, "ollama": {}}}), encoding="utf-8")
-
-    result = build_host_config(state_dir)
-
-    data = json.loads(result.read_text(encoding="utf-8"))
-    # Should reflect current env state, not old file content.
-    assert list(data["providers"].keys()) == ["anthropic"]
-
-
-def test_build_host_config_handles_azure_alternate_env_var(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """AZURE_OPENAI_KEY (alternate) should also trigger the azure-openai provider."""
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("AZURE_OPENAI_KEY", "az-alt-test")  # not AZURE_OPENAI_API_KEY
-
-    state_dir = tmp_path / "state"
-    result = build_host_config(state_dir)
-
-    data = json.loads(result.read_text(encoding="utf-8"))
-    assert "azure-openai" in data["providers"]
-
+from amplifier_app_opencode.cli import build_provider_block, main
 
 # ---------------------------------------------------------------------------
 # build_provider_block() context-clamp unit tests
@@ -202,8 +84,6 @@ def test_max_context_cli_option_clamps_written_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`prepare --max-context` clamps the context window in the written config."""
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     _patch_launch_deps(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
@@ -216,9 +96,7 @@ def test_max_context_cli_option_clamps_written_config(
         captured["provider"] = provider
         return config_path
 
-    monkeypatch.setattr(
-        "amplifier_app_opencode.cli.write_opencode_config", _capture_write
-    )
+    monkeypatch.setattr("amplifier_app_opencode.cli.write_opencode_config", _capture_write)
 
     runner = CliRunner()
     result = runner.invoke(main, ["prepare", "--max-context", "200000"])
@@ -241,10 +119,10 @@ def _make_mock_proc() -> MagicMock:
 
 def _patch_launch_deps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Patch all I/O-heavy functions so launch tests run without real processes."""
-    # Server never running → triggers the start branch.
+    # Server never running -> triggers the start branch.
     monkeypatch.setattr("amplifier_app_opencode.cli.server_is_running", lambda *a, **kw: False)
     monkeypatch.setattr("amplifier_app_opencode.cli.wait_for_server_ready", lambda *a, **kw: True)
-    # Models discovery returns empty list — ok for these tests.
+    # Models discovery returns empty list -- ok for these tests.
     monkeypatch.setattr("amplifier_app_opencode.cli.fetch_models", lambda *a, **kw: [])
     # Config writing returns a dummy path.
     opencode_cfg = tmp_path / "opencode.jsonc"
@@ -258,13 +136,12 @@ def _patch_launch_deps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("amplifier_app_opencode.cli.PID_FILE", tmp_path / "agent.pid")
 
 
-def test_launch_uses_generated_config_when_no_flag(
+def test_launch_passes_no_config_when_no_flag_given(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When no --host-config is passed, launch auto-generates one from env and passes
-    it to start_amplifier_agent."""
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    """When no --host-config is passed, launch passes host_config=None through to
+    start_amplifier_agent unchanged -- no auto-generation. amplifier-agent itself
+    auto-enables whichever providers have resolvable credentials."""
     monkeypatch.setenv("HOME", str(tmp_path))
     _patch_launch_deps(monkeypatch, tmp_path)
 
@@ -280,21 +157,15 @@ def test_launch_uses_generated_config_when_no_flag(
     result = runner.invoke(main, ["launch", "--no-launch"])
 
     assert result.exit_code == 0, result.output
-    assert len(captured) == 1
-    assert captured[0] is not None
-    # The generated file must be inside our tmp HOME.
-    expected = tmp_path / ".amplifier-opencode" / "state" / "host_config.json"
-    assert captured[0] == expected
-    # And it must actually contain the provider.
-    data = json.loads(expected.read_text(encoding="utf-8"))
-    assert "anthropic" in data["providers"]
+    assert captured == [None]
+    # No state dir / host_config.json must be auto-generated anywhere.
+    assert not (tmp_path / ".amplifier-opencode").exists()
 
 
 def test_launch_uses_user_config_when_flag_given(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When --host-config PATH is given, that path is passed verbatim; no auto-generation."""
-    _clear_provider_env(monkeypatch)
+    """When --host-config PATH is given, that path is passed verbatim."""
     monkeypatch.setenv("HOME", str(tmp_path))
     _patch_launch_deps(monkeypatch, tmp_path)
 
@@ -314,35 +185,7 @@ def test_launch_uses_user_config_when_flag_given(
     result = runner.invoke(main, ["launch", "--host-config", str(user_cfg), "--no-launch"])
 
     assert result.exit_code == 0, result.output
-    assert len(captured) == 1
-    assert captured[0] == user_cfg
-    # Auto-generated path must NOT exist.
-    auto_path = tmp_path / ".amplifier-opencode" / "state" / "host_config.json"
-    assert not auto_path.exists()
-
-
-def test_launch_fails_when_no_creds_and_no_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """With no env vars and no --host-config, launch aborts with a clear message."""
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    _patch_launch_deps(monkeypatch, tmp_path)
-
-    started: list[bool] = []
-
-    def mock_start(**kwargs):  # type: ignore[override]
-        started.append(True)
-        return _make_mock_proc()
-
-    monkeypatch.setattr("amplifier_app_opencode.cli.start_amplifier_agent", mock_start)
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["launch", "--no-launch"])
-
-    assert result.exit_code != 0
-    assert "Set at least one of" in result.output
-    assert not started, "amplifier-agent must never be spawned when no creds"
+    assert captured == [user_cfg]
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +197,7 @@ def _stub_doctor_binaries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     """Stub binary checks and server checks so doctor runs without real tools."""
     monkeypatch.setattr(
         "amplifier_app_opencode.cli._check_amplifier_agent_binary",
-        lambda: ("[ OK ]", "amplifier-agent found at /fake/amplifier-agent (0.8.0)"),
+        lambda: ("[ OK ]", "amplifier-agent found at /fake/amplifier-agent (0.9.0)"),
     )
     monkeypatch.setattr(
         "amplifier_app_opencode.cli._check_opencode_binary",
@@ -374,45 +217,125 @@ def _stub_doctor_binaries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     )
 
 
+def _provider_report(rows: list[dict]) -> dict:
+    return {"schema_version": 1, "providers": rows}
+
+
 def test_doctor_reports_each_provider_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With 2 of 4 providers set, doctor shows ✓ for 2 and ✗ for 2."""
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+    """With 2 of 4 providers resolvable per the agent's report, doctor shows
+    check for 2 and cross for 2."""
     _stub_doctor_binaries(monkeypatch, tmp_path)
+    report = _provider_report(
+        [
+            {
+                "name": "anthropic",
+                "module": "provider-anthropic",
+                "resolvable": True,
+                "source": "env",
+                "env_var": "ANTHROPIC_API_KEY",
+            },
+            {
+                "name": "openai",
+                "module": "provider-openai",
+                "resolvable": True,
+                "source": "file",
+                "env_var": "OPENAI_API_KEY",
+            },
+            {
+                "name": "azure-openai",
+                "module": "provider-azure-openai",
+                "resolvable": False,
+                "source": "none",
+                "env_var": "AZURE_OPENAI_API_KEY",
+            },
+            {
+                "name": "ollama",
+                "module": "provider-ollama",
+                "resolvable": False,
+                "source": "default",
+                "env_var": "OLLAMA_HOST",
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "amplifier_app_opencode.cli._fetch_provider_report", lambda *a, **kw: report
+    )
 
     runner = CliRunner()
     result = runner.invoke(main, ["doctor"])
 
-    assert result.output.count("✓") == 2
-    assert result.output.count("✗") == 2
+    assert result.output.count("\u2713") == 2
+    assert result.output.count("\u2717") == 2
+    assert result.exit_code == 0, result.output
 
 
-def test_doctor_fails_when_no_providers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no provider env vars, doctor exits 1 and prints the set-at-least-one message."""
-    _clear_provider_env(monkeypatch)
+def test_doctor_fails_when_provider_report_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `amplifier-agent providers list --json` can't be run, doctor fails
+    loudly instead of silently reporting nothing."""
     _stub_doctor_binaries(monkeypatch, tmp_path)
+    monkeypatch.setattr("amplifier_app_opencode.cli._fetch_provider_report", lambda *a, **kw: None)
 
     runner = CliRunner()
     result = runner.invoke(main, ["doctor"])
 
     assert result.exit_code == 1
-    assert "Set at least one of" in result.output
+    assert "Could not run `amplifier-agent providers list --json`" in result.output
 
 
-def test_doctor_passes_when_at_least_one_provider(
+def test_doctor_fails_when_no_providers_resolvable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With at least one provider env var set, doctor exits 0."""
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    """With a report where zero providers are resolvable, doctor exits 1."""
     _stub_doctor_binaries(monkeypatch, tmp_path)
+    report = _provider_report(
+        [
+            {
+                "name": "anthropic",
+                "module": "provider-anthropic",
+                "resolvable": False,
+                "source": "none",
+                "env_var": "ANTHROPIC_API_KEY",
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "amplifier_app_opencode.cli._fetch_provider_report", lambda *a, **kw: report
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "No provider credentials resolvable" in result.output
+
+
+def test_doctor_passes_when_at_least_one_provider_resolvable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With at least one resolvable provider in the agent's report, doctor exits 0."""
+    _stub_doctor_binaries(monkeypatch, tmp_path)
+    report = _provider_report(
+        [
+            {
+                "name": "ollama",
+                "module": "provider-ollama",
+                "resolvable": True,
+                "source": "env",
+                "env_var": "OLLAMA_HOST",
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "amplifier_app_opencode.cli._fetch_provider_report", lambda *a, **kw: report
+    )
 
     runner = CliRunner()
     result = runner.invoke(main, ["doctor"])
 
     assert result.exit_code == 0
     assert "ollama" in result.output
-    assert "✓" in result.output
+    assert "\u2713" in result.output
