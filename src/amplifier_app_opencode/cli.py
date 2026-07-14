@@ -38,6 +38,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -76,6 +77,12 @@ DEFAULT_MAX_CONTEXT: int | None = None
 # from when the user runs ``amplifier-opencode update``.
 PACKAGE_NAME = "amplifier-app-opencode"
 REPO_URL = "https://github.com/microsoft/amplifier-app-opencode.git"
+
+# Minimum amplifier-agent version amplifier-opencode requires. amplifier-agent
+# >= 0.9.1 resolves provider credentials from credentials.json at serve startup
+# (#82); older agents leave providers unserved because opencode no longer
+# injects provider env vars itself.
+MIN_AGENT_VERSION = "0.9.1"
 
 SERVER_LOG_PATH = Path("/tmp/amplifier-agent.log")
 PID_FILE = Path("/tmp/amplifier-opencode-agent.pid")
@@ -628,6 +635,26 @@ _INFO = "[INFO]"
 _WARN = "[WARN]"
 
 
+def _extract_semver(text: str) -> tuple[int, int, int] | None:
+    """Pull the first X.Y.Z out of a version string.
+
+    e.g. ``amplifier-agent, version 0.9.1`` -> ``(0, 9, 1)``.
+    """
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def _agent_version_ok(version_text: str, minimum: str = MIN_AGENT_VERSION) -> bool:
+    """True if the agent version string is >= minimum (semver tuple compare)."""
+    have = _extract_semver(version_text)
+    want = _extract_semver(minimum)
+    if have is None or want is None:
+        return False
+    return have >= want
+
+
 def _binary_version(binary: str, version_flag: str = "--version") -> str:
     """Best-effort version string for a binary. Returns "?" on failure."""
     try:
@@ -653,7 +680,15 @@ def _check_amplifier_agent_binary() -> tuple[str, str]:
             "https://github.com/microsoft/amplifier-agent.",
         )
     version = _binary_version(binary)
-    return _OK, f"amplifier-agent found at {binary} ({version})"
+    if not _agent_version_ok(version):
+        return (
+            _FAIL,
+            f"amplifier-agent at {binary} is {version}; amplifier-opencode "
+            f"requires >= {MIN_AGENT_VERSION} (the agent resolves provider "
+            "credentials at serve startup). Update with `amplifier-agent "
+            "update`, or `amplifier-opencode update` to update both.",
+        )
+    return _OK, f"amplifier-agent found at {binary} ({version}, >= {MIN_AGENT_VERSION})"
 
 
 def _check_opencode_binary() -> tuple[str, str]:
@@ -919,6 +954,62 @@ def _get_install_info() -> dict[str, Any]:
     return info
 
 
+def _cascade_update_agent() -> None:
+    """Ensure amplifier-agent meets MIN_AGENT_VERSION, updating it if needed.
+
+    amplifier-opencode delegates all provider-credential handling to
+    amplifier-agent (>= MIN_AGENT_VERSION resolves them from credentials.json
+    at serve startup, per #82). Updating opencode against a stale agent yields
+    a broken install, so we bring the agent up to the required floor as part
+    of the same update. Non-fatal: warn rather than abort, since the user can
+    update the agent manually.
+    """
+    binary = shutil.which("amplifier-agent")
+    if not binary:
+        click.secho(
+            "! amplifier-agent not on PATH -- install it "
+            "(https://github.com/microsoft/amplifier-agent); amplifier-opencode "
+            f"requires >= {MIN_AGENT_VERSION}.",
+            fg="yellow",
+        )
+        return
+
+    version = _binary_version(binary)
+    if _agent_version_ok(version):
+        click.secho(
+            f"\u2713 amplifier-agent {version} already satisfies >= {MIN_AGENT_VERSION}.",
+            fg="green",
+        )
+        return
+
+    click.secho(
+        f"amplifier-agent {version} is below the required {MIN_AGENT_VERSION}; "
+        "running `amplifier-agent update` ...",
+        fg="cyan",
+    )
+    result = subprocess.run([binary, "update"])
+    if result.returncode != 0:
+        click.secho(
+            "! `amplifier-agent update` failed. Update it manually, then re-run "
+            "`amplifier-opencode doctor` to verify.",
+            fg="yellow",
+        )
+        return
+
+    new_version = _binary_version(binary)
+    if _agent_version_ok(new_version):
+        click.secho(
+            f"\u2713 amplifier-agent updated to {new_version} (>= {MIN_AGENT_VERSION}).",
+            fg="green",
+        )
+    else:
+        click.secho(
+            f"! amplifier-agent is {new_version} after update, still below "
+            f"{MIN_AGENT_VERSION}. Check the `amplifier-agent update` output above.",
+            fg="yellow",
+        )
+
+
 def _run_update(*, ref: str, force: bool) -> int:
     """Reinstall amplifier-app-opencode from a git ref via ``uv tool install --force``.
 
@@ -969,6 +1060,10 @@ def _run_update(*, ref: str, force: bool) -> int:
         bold=True,
     )
     click.echo("  Run `amplifier-opencode doctor` to verify, or launch as usual.")
+
+    # amplifier-opencode is only useful with a matching amplifier-agent; bring
+    # the agent to >= MIN_AGENT_VERSION as part of the same update.
+    _cascade_update_agent()
     return 0
 
 
