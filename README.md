@@ -1,31 +1,43 @@
 # amplifier-app-opencode
 
-Launch the [opencode](https://opencode.ai) TUI on top of [amplifier-agent](https://github.com/microsoft/amplifier-agent) with one command:
+Run the [opencode](https://opencode.ai) coding TUI on top of your local
+[amplifier-agent](https://github.com/microsoft/amplifier-agent) — one command to
+install, one command to start coding:
 
 ```bash
-amplifier-opencode
+# 1. install (also installs everything it needs)
+curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh | bash
+
+# 2. set up the connection and jump into opencode
+amplifier-opencode launch
 ```
 
-This binary discovers what models your local amplifier-agent serves, writes a working opencode config from that discovery, and launches opencode — every time, no manual config to maintain.
+amplifier-opencode discovers which models your amplifier-agent serves, writes a
+working opencode config from that discovery, and opens opencode — re-synced
+every time, with no config to maintain by hand.
 
 ---
 
 ## What this gives you
 
 opencode is a fast terminal coding assistant. amplifier-agent is Microsoft's
-modular agent framework with a multi-provider OpenAI-compatible HTTP face.
+modular agent framework with a multi-provider, OpenAI-compatible HTTP face.
+This adapter wires the two together so you don't have to.
 
-Without this adapter, integrating them requires you to manually mirror
-amplifier-agent's `/v1/models` output into your opencode config and re-edit
-it whenever your provider mix changes.
+- **Self-managing:** installs and updates amplifier-agent and opencode for you,
+  and walks you through connecting a model provider on first run — no "go
+  install X yourself" detours
+- **Always-live models:** opencode's model picker is re-discovered on every run,
+  so it matches whatever amplifier-agent is currently serving
+- **Zero-config bridge:** amplifier-agent's server is auto-started in the
+  background if it isn't already running
+- **Drop-in opencode:** `/models`, `/connect`, and all slash commands work normally
+- **Built-in `doctor`:** diagnoses any setup issue in one command
 
-With this adapter:
-
-- One command (`amplifier-opencode`) handles the whole flow
-- The model list in opencode's picker is **always live** — re-discovered on every launch
-- amplifier-agent's server is auto-started in the background if it isn't running
-- Drop-in opencode TUI: `/models`, `/connect`, slash commands all work normally
-- Includes a `doctor` subcommand that diagnoses any setup issue before you ask
+> **Two commands to know:** `amplifier-opencode launch` sets up the connection
+> **and** drops you into the opencode TUI. Plain `amplifier-opencode` just
+> refreshes the connection (starts the server, re-discovers models, rewrites the
+> config) without launching — handy after you change providers or add a key.
 
 ---
 
@@ -86,10 +98,15 @@ what to do instead of failing silently.
 
 ## Manual install (advanced)
 
-Prefer to install each component yourself? You need **a few system tools** and
-**three Amplifier components** installed. This section walks through the
-official install for each so a brand-new machine can get set up
-start-to-finish. (If you used the one-command install above, you can skip this.)
+**Most people can skip this** — the one-command install above handles it all.
+This section is for anyone who wants to install each component by hand.
+
+<details>
+<summary>Show the full step-by-step manual install</summary>
+
+You need **a few system tools** and **three Amplifier components** installed.
+The steps below walk through the official install for each so a brand-new
+machine can get set up start-to-finish.
 
 ### 0. System tools — git, curl
 
@@ -111,7 +128,7 @@ Why: `git` is required because amplifier-agent and amplifier-app-opencode are
 installed via `git+https://...` URLs (neither is on PyPI yet). `curl` is
 required by the uv and opencode one-line installers.
 
-### 1. amplifier-agent — the backend server (>= 0.8.0 required)
+### 1. amplifier-agent — the backend server (>= 0.9.1 required)
 
 `amplifier-agent` is the OpenAI-compatible HTTP server this adapter talks to.
 Use the official one-line installer — it pulls the latest released binary and
@@ -131,13 +148,13 @@ The installer needs [`uv`](https://docs.astral.sh/uv/) and `curl` on PATH and
 will tell you exactly what to install if either is missing — it will not
 bootstrap them silently.
 
-> **Version requirement: `amplifier-agent >= 0.8.0` is mandatory.** Versions
-> below 0.8.0 do not ship the `serve chat-completions` HTTP face, multi-provider
-> routing, or the `auth` subcommand — `amplifier-opencode` will fail to spawn
-> the server, populate `/v1/models`, or read persisted credentials.
->
-> If the version reported is older than 0.8.0, upgrade in place with
-> `amplifier-agent update` and re-run `amplifier-opencode doctor` to confirm.
+> **Version requirement: `amplifier-agent >= 0.9.1` is mandatory.** Older
+> versions lack the pieces amplifier-opencode depends on (the `serve
+> chat-completions` HTTP face, multi-provider routing, and the `auth`
+> subcommand). If you use the one-command install, amplifier-opencode detects a
+> too-old amplifier-agent and force-updates it for you; if you're installing by
+> hand and see an older version, upgrade with `amplifier-agent update` and
+> re-run `amplifier-opencode doctor` to confirm.
 
 For full install options (source builds, manual `uv tool install --from git+…`,
 installer flags) see the
@@ -220,9 +237,16 @@ The amplifier-agent server uses **env-first** resolution: shell env vars win
 over the credentials file, so existing shell-rc workflows continue working
 unchanged.
 
+</details>
+
 ---
 
 ## Provider Credentials
+
+**You usually don't need to do anything here manually.** The first time you run
+`amplifier-opencode` (or `amplifier-opencode setup`) with no provider connected,
+it walks you through picking a provider and pasting a key, then stores it for
+you. This section is reference for when you'd rather set credentials yourself.
 
 amplifier-opencode itself does no provider detection. `amplifier-agent serve`
 auto-enables every provider whose credentials resolve (env var, or
@@ -262,7 +286,12 @@ See [amplifier-agent's host_config documentation](https://github.com/microsoft/a
 amplifier-opencode
 ```
 
-You'll see something like:
+The very first time, amplifier-opencode makes sure the whole stack is ready
+before it does anything else: it installs or updates amplifier-agent and
+opencode if needed, and — if no provider is connected yet — walks you through
+adding one. (To do just that setup without going further, run
+`amplifier-opencode setup`.) Once everything's healthy you'll see something
+like:
 
 ```
 [1/4] Starting amplifier-agent (port 9099, workspace='opencode')
@@ -399,6 +428,8 @@ amplifier-opencode [GLOBAL OPTIONS] [SUBCOMMAND] [SUBCOMMAND OPTIONS]
 |---|---|---|---|
 | `--base-url` | `AMPLIFIER_AGENT_BASE_URL` | `http://127.0.0.1:9099/v1` | amplifier-agent endpoint |
 | `--api-key` | `AMPLIFIER_AGENT_API_KEY` | `local-dev-secret` | wire-level bearer token |
+| `--yes` | — | false | Assume "yes" to all prompts (install/heal without asking). For CI and non-interactive shells. |
+| `--no-bootstrap` | — | false | Skip the self-healing preflight; assume amplifier-agent and opencode are already installed. |
 
 ### `launch` (default)
 
@@ -418,6 +449,23 @@ Discover models, write opencode.json, exec opencode. Run when no subcommand is g
 ### `doctor`
 
 Run all prerequisite checks. No flags; honours the global `--base-url` and `--api-key`.
+
+### `setup`
+
+Make the whole stack ready without launching: install/heal amplifier-agent and
+opencode, then walk through connecting a provider if none is configured. Handy
+for a one-time "get me set up" pass. Respects the global `--yes` flag.
+
+### `update`
+
+Update amplifier-opencode, then amplifier-agent, then opencode to their latest
+versions.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--no-opencode` | false | Update the Amplifier pieces but leave opencode at its current version |
+| `--ref` | `main` | Git ref to install amplifier-opencode from |
+| `--force` | false | Reinstall even if already up to date |
 
 ---
 
