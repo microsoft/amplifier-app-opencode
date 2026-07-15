@@ -86,6 +86,11 @@ def test_max_context_cli_option_clamps_written_config(
     """`prepare --max-context` clamps the context window in the written config."""
     _patch_launch_deps(monkeypatch, tmp_path)
 
+    # prepare still starts the server (to query /v1/models); patch the spawn so
+    # the test doesn't require a real amplifier-agent binary on PATH.
+    monkeypatch.setattr(
+        "amplifier_app_opencode.cli.start_amplifier_agent", lambda **kw: _make_mock_proc()
+    )
     monkeypatch.setattr(
         "amplifier_app_opencode.cli.fetch_models",
         lambda *a, **kw: [_model("claude-sonnet-4-6", 1_000_000)],
@@ -99,7 +104,7 @@ def test_max_context_cli_option_clamps_written_config(
     monkeypatch.setattr("amplifier_app_opencode.cli.write_opencode_config", _capture_write)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["prepare", "--max-context", "200000"])
+    result = runner.invoke(main, ["--no-bootstrap", "prepare", "--max-context", "200000"])
 
     assert result.exit_code == 0, result.output
     ctx = captured["provider"]["models"]["claude-sonnet-4-6"]["limit"]["context"]
@@ -154,7 +159,7 @@ def test_launch_passes_no_config_when_no_flag_given(
     monkeypatch.setattr("amplifier_app_opencode.cli.start_amplifier_agent", mock_start)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["launch", "--no-launch"])
+    result = runner.invoke(main, ["--no-bootstrap", "launch", "--no-launch"])
 
     assert result.exit_code == 0, result.output
     assert captured == [None]
@@ -182,7 +187,9 @@ def test_launch_uses_user_config_when_flag_given(
     monkeypatch.setattr("amplifier_app_opencode.cli.start_amplifier_agent", mock_start)
 
     runner = CliRunner()
-    result = runner.invoke(main, ["launch", "--host-config", str(user_cfg), "--no-launch"])
+    result = runner.invoke(
+        main, ["--no-bootstrap", "launch", "--host-config", str(user_cfg), "--no-launch"]
+    )
 
     assert result.exit_code == 0, result.output
     assert captured == [user_cfg]

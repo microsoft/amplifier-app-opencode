@@ -50,6 +50,14 @@ from typing import Any
 import click
 import httpx
 
+from . import onboarding, prereqs
+from . import platform_utils as plat
+
+# Provider report lives in prereqs (shared with onboarding); doctor patches
+# this name in tests, so keep the historical ``cli._fetch_provider_report``
+# symbol as a thin re-export.
+from .prereqs import fetch_provider_report as _fetch_provider_report
+
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
@@ -84,8 +92,10 @@ REPO_URL = "https://github.com/microsoft/amplifier-app-opencode.git"
 # injects provider env vars itself.
 MIN_AGENT_VERSION = "0.9.1"
 
-SERVER_LOG_PATH = Path("/tmp/amplifier-agent.log")
-PID_FILE = Path("/tmp/amplifier-opencode-agent.pid")
+# Resolved via platform_utils so they land in %TEMP% on native Windows instead
+# of a non-existent /tmp. Tests monkeypatch these module attributes directly.
+SERVER_LOG_PATH = plat.server_log_path()
+PID_FILE = plat.pid_file_path()
 
 # Global opencode config dir (XDG-aligned).
 GLOBAL_OPENCODE_DIR = Path.home() / ".config" / "opencode"
@@ -521,8 +531,30 @@ def _run_launch(
     provider_id: str,
     opencode_args: tuple[str, ...],
     max_context: int | None = None,
+    bootstrap: bool = True,
+    assume_yes: bool = False,
 ) -> None:
-    """The check -> start -> discover -> write -> exec flow."""
+    """The (bootstrap ->) check -> start -> discover -> write -> exec flow.
+
+    ``bootstrap`` (default True) makes the launch self-healing: before doing
+    anything else we ensure amplifier-agent and opencode are installed and
+    healthy, and -- if the agent reports zero resolvable providers -- walk the
+    user through configuring one. Pass ``bootstrap=False`` (``--no-bootstrap``)
+    to skip all of that and assume the environment is already prepared.
+    """
+    # Step 0: self-healing preflight ----------------------------------------
+    if bootstrap:
+        if not prereqs.ensure_prerequisites(assume_yes=assume_yes, allow_install=True):
+            raise click.ClickException(
+                "Prerequisites are not ready (see messages above). Re-run with "
+                "--yes to auto-install, or fix the reported items and retry. "
+                "Use --no-bootstrap to skip this preflight entirely."
+            )
+        # Configure a provider credential now (before we start serve) so the
+        # server comes up with models available, rather than an empty picker.
+        if onboarding.needs_onboarding():
+            onboarding.run_onboarding(assume_yes=assume_yes)
+
     # Resolve the config target: global by default, project-level if --project-dir.
     if project_dir is None:
         config_path = resolve_global_config_path()
@@ -719,40 +751,6 @@ def _check_amplifier_agent_server(base_url: str, api_key: str) -> tuple[str, str
     )
 
 
-def _fetch_provider_report(binary: str | None = None) -> dict[str, Any] | None:
-    """Shell out to ``amplifier-agent providers list --json`` for a live report.
-
-    amplifier-agent is the single source of truth for which providers it
-    will actually auto-enable at ``serve`` startup (credential resolution
-    order: env var, then ``~/.amplifier-agent/credentials.json``). Rather
-    than re-implementing that resolution chain here, we ask the agent
-    directly. Returns the parsed ``{"schema_version": 1, "providers": [...]}``
-    payload, or ``None`` when the binary is missing, the command fails, or
-    the output isn't the expected JSON shape.
-    """
-    binary = binary or shutil.which("amplifier-agent")
-    if not binary:
-        return None
-    try:
-        r = subprocess.run(
-            [binary, "providers", "list", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if r.returncode != 0:
-        return None
-    try:
-        payload = json.loads(r.stdout)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("providers"), list):
-        return None
-    return payload
-
-
 def _provider_section_lines() -> tuple[list[str], bool]:
     """Build per-provider credential status lines for the doctor output.
 
@@ -911,106 +909,7 @@ def _run_doctor(base_url: str, api_key: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _get_install_info() -> dict[str, Any]:
-    """Detect how amplifier-app-opencode was installed via PEP 610 direct_url.json.
-
-    Returns a dict with:
-      - ``source``  one of ``"git"``, ``"editable"``, ``"pypi"``, ``"unknown"``
-      - ``version`` distribution version, or ``"?"`` when not discoverable
-      - ``commit``  git commit SHA when ``source == "git"``, else ``None``
-      - ``url``     git remote URL when ``source == "git"``, else ``None``
-
-    ``update`` uses this to (a) report the current install on screen and
-    (b) refuse to clobber an editable (``-e``) install unless ``--force``.
-    """
-    from importlib.metadata import PackageNotFoundError, distribution
-
-    info: dict[str, Any] = {
-        "source": "unknown",
-        "version": "?",
-        "commit": None,
-        "url": None,
-    }
-    try:
-        dist = distribution(PACKAGE_NAME)
-        info["version"] = dist.metadata["Version"]
-        du_text = dist.read_text("direct_url.json")
-        if du_text:
-            du = json.loads(du_text)
-            if "vcs_info" in du:
-                info["source"] = "git"
-                info["commit"] = du["vcs_info"].get("commit_id", "") or None
-                info["url"] = du.get("url", "") or None
-            elif (du.get("dir_info") or {}).get("editable"):
-                info["source"] = "editable"
-            else:
-                info["source"] = "unknown"
-        else:
-            # No direct_url.json => almost certainly installed from a normal
-            # PyPI release (or unpacked sdist with no provenance metadata).
-            info["source"] = "pypi"
-    except PackageNotFoundError:
-        pass
-    return info
-
-
-def _cascade_update_agent() -> None:
-    """Ensure amplifier-agent meets MIN_AGENT_VERSION, updating it if needed.
-
-    amplifier-opencode delegates all provider-credential handling to
-    amplifier-agent (>= MIN_AGENT_VERSION resolves them from credentials.json
-    at serve startup, per #82). Updating opencode against a stale agent yields
-    a broken install, so we bring the agent up to the required floor as part
-    of the same update. Non-fatal: warn rather than abort, since the user can
-    update the agent manually.
-    """
-    binary = shutil.which("amplifier-agent")
-    if not binary:
-        click.secho(
-            "! amplifier-agent not on PATH -- install it "
-            "(https://github.com/microsoft/amplifier-agent); amplifier-opencode "
-            f"requires >= {MIN_AGENT_VERSION}.",
-            fg="yellow",
-        )
-        return
-
-    version = _binary_version(binary)
-    if _agent_version_ok(version):
-        click.secho(
-            f"\u2713 amplifier-agent {version} already satisfies >= {MIN_AGENT_VERSION}.",
-            fg="green",
-        )
-        return
-
-    click.secho(
-        f"amplifier-agent {version} is below the required {MIN_AGENT_VERSION}; "
-        "running `amplifier-agent update` ...",
-        fg="cyan",
-    )
-    result = subprocess.run([binary, "update"])
-    if result.returncode != 0:
-        click.secho(
-            "! `amplifier-agent update` failed. Update it manually, then re-run "
-            "`amplifier-opencode doctor` to verify.",
-            fg="yellow",
-        )
-        return
-
-    new_version = _binary_version(binary)
-    if _agent_version_ok(new_version):
-        click.secho(
-            f"\u2713 amplifier-agent updated to {new_version} (>= {MIN_AGENT_VERSION}).",
-            fg="green",
-        )
-    else:
-        click.secho(
-            f"! amplifier-agent is {new_version} after update, still below "
-            f"{MIN_AGENT_VERSION}. Check the `amplifier-agent update` output above.",
-            fg="yellow",
-        )
-
-
-def _run_update(*, ref: str, force: bool) -> int:
+def _update_self(*, ref: str, force: bool) -> None:
     """Reinstall amplifier-app-opencode from a git ref via ``uv tool install --force``.
 
     Prints the current install metadata, then shells out to ``uv tool
@@ -1019,7 +918,7 @@ def _run_update(*, ref: str, force: bool) -> int:
     checkout almost certainly does not want their dev tree silently
     replaced with a release build.
     """
-    info = _get_install_info()
+    info = prereqs.get_self_install_info()
     click.secho(
         f"Current install: {PACKAGE_NAME} {info['version']} (via {info['source']})",
         fg="cyan",
@@ -1043,27 +942,54 @@ def _run_update(*, ref: str, force: bool) -> int:
     spec = f"git+{REPO_URL}@{ref}"
     click.secho(f"Installing {spec} ...", fg="cyan")
     # We deliberately stream uv's own output to the user's terminal rather
-    # than capturing it -- uv prints rich progress (resolve, download,
-    # link) the user expects to see, and any failure mode is easier to
-    # debug when the original uv error stays visible.
+    # than capturing it -- uv prints rich progress the user expects to see,
+    # and any failure mode is easier to debug when uv's error stays visible.
     result = subprocess.run([uv, "tool", "install", "--force", spec])
     if result.returncode != 0:
         raise click.ClickException(
             f"`uv tool install --force {spec}` exited with code "
             f"{result.returncode}. See uv's output above for details."
         )
+    click.secho(f"\u2713 amplifier-opencode updated from {ref}.", fg="green", bold=True)
+
+
+def _run_update(*, ref: str, force: bool, include_opencode: bool, assume_yes: bool) -> int:
+    """Update the whole stack: amplifier-opencode, amplifier-agent, and opencode.
+
+    The user installs and updates ONE thing; this keeps all three in lockstep.
+    amplifier-opencode and amplifier-agent are always updated (a stale agent
+    breaks the adapter). opencode is updated too, but the user can opt out --
+    via ``--no-opencode`` or by answering "no" to the interactive prompt --
+    since some users pin opencode deliberately.
+    """
+    # 1. amplifier-opencode (self) -- always.
+    click.secho("== Updating amplifier-opencode ==", fg="cyan", bold=True)
+    _update_self(ref=ref, force=force)
+
+    # 2. amplifier-agent -- always (force-heals if below the required floor).
+    click.echo()
+    click.secho("== Updating amplifier-agent ==", fg="cyan", bold=True)
+    if not prereqs.update_agent_to_latest():
+        click.secho(
+            "! amplifier-agent could not be brought up to date; see output above.",
+            fg="yellow",
+        )
+
+    # 3. opencode -- opt-out. Respect --no-opencode, else ask when interactive.
+    click.echo()
+    do_opencode = include_opencode
+    if include_opencode and not assume_yes and plat.is_interactive():
+        do_opencode = click.confirm("Update opencode as well?", default=True)
+    if do_opencode:
+        click.secho("== Updating opencode ==", fg="cyan", bold=True)
+        if not prereqs.update_opencode():
+            click.secho("! opencode could not be updated; see output above.", fg="yellow")
+    else:
+        click.secho("== Skipping opencode update (left at its current version) ==", fg="cyan")
 
     click.echo()
-    click.secho(
-        f"✓ amplifier-opencode updated from {ref}.",
-        fg="green",
-        bold=True,
-    )
+    click.secho("\u2713 Update complete.", fg="green", bold=True)
     click.echo("  Run `amplifier-opencode doctor` to verify, or launch as usual.")
-
-    # amplifier-opencode is only useful with a matching amplifier-agent; bring
-    # the agent to >= MIN_AGENT_VERSION as part of the same update.
-    _cascade_update_agent()
     return 0
 
 
@@ -1090,8 +1016,29 @@ def _run_update(*, ref: str, force: bool) -> int:
     show_default=True,
     help="API key the server expects (Authorization: Bearer ...).",
 )
+@click.option(
+    "--yes",
+    "-y",
+    "assume_yes",
+    is_flag=True,
+    help="Assume yes to install/onboarding prompts (non-interactive bootstrap).",
+)
+@click.option(
+    "--no-bootstrap",
+    is_flag=True,
+    help=(
+        "Skip the self-healing preflight (do not install/update prerequisites "
+        "or run credential onboarding). Assume the environment is ready."
+    ),
+)
 @click.pass_context
-def main(ctx: click.Context, base_url: str, api_key: str) -> None:
+def main(
+    ctx: click.Context,
+    base_url: str,
+    api_key: str,
+    assume_yes: bool,
+    no_bootstrap: bool,
+) -> None:
     """Bridge amplifier-agent and opencode: set up the server + config,
     then tell you how to drive opencode.
 
@@ -1125,6 +1072,8 @@ def main(ctx: click.Context, base_url: str, api_key: str) -> None:
     ctx.ensure_object(dict)
     ctx.obj["base_url"] = base_url
     ctx.obj["api_key"] = api_key
+    ctx.obj["assume_yes"] = assume_yes
+    ctx.obj["bootstrap"] = not no_bootstrap
 
     if ctx.invoked_subcommand is None:
         # Default action: prepare the bridge without exec'ing opencode.
@@ -1233,6 +1182,8 @@ def launch(
         provider_id=provider_id,
         max_context=max_context,
         opencode_args=opencode_args,
+        bootstrap=ctx.obj.get("bootstrap", True),
+        assume_yes=ctx.obj.get("assume_yes", False),
     )
 
 
@@ -1332,6 +1283,39 @@ def prepare(
         provider_id=provider_id,
         max_context=max_context,
         opencode_args=(),
+        bootstrap=ctx.obj.get("bootstrap", True),
+        assume_yes=ctx.obj.get("assume_yes", False),
+    )
+
+
+@main.command("setup")
+@click.pass_context
+def setup(ctx: click.Context) -> None:
+    """Install/repair prerequisites and walk through provider credentials.
+
+    Runs the same self-healing preflight as a normal launch, but stops before
+    starting the server or opencode. Use it to get a fresh machine ready in one
+    step: it installs amplifier-agent and opencode if missing, force-heals them
+    if they are too old, and -- if no provider credentials are configured --
+    walks you through setting one up. Respects the global ``--yes`` flag.
+    """
+    assume_yes = ctx.obj.get("assume_yes", False)
+    ok = prereqs.ensure_prerequisites(assume_yes=assume_yes, allow_install=True)
+    if not ok:
+        click.secho(
+            "\nSome prerequisites are not ready. Re-run with --yes to auto-install, "
+            "or address the items above.",
+            fg="red",
+        )
+        sys.exit(1)
+
+    # Credential onboarding (only when the agent reports zero resolvable providers).
+    if onboarding.needs_onboarding():
+        onboarding.run_onboarding(assume_yes=assume_yes)
+
+    click.echo()
+    click.secho(
+        "\u2713 Setup complete. Launch any time with: amplifier-opencode", fg="green", bold=True
     )
 
 
@@ -1362,26 +1346,46 @@ def doctor(ctx: click.Context) -> None:
         "installs are preserved so a dev checkout is not silently replaced."
     ),
 )
-def update(ref: str, force: bool) -> None:
-    """Pull in and install the latest amplifier-app-opencode from GitHub.
+@click.option(
+    "--no-opencode",
+    is_flag=True,
+    help="Update amplifier-opencode and amplifier-agent, but leave opencode untouched.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    "assume_yes",
+    is_flag=True,
+    help="Don't prompt; assume yes (updates opencode too unless --no-opencode).",
+)
+def update(ref: str, force: bool, no_opencode: bool, assume_yes: bool) -> None:
+    """Update the whole stack: amplifier-opencode, amplifier-agent, and opencode.
 
-    Reinstalls the ``amplifier-opencode`` binary by shelling out to
-    ``uv tool install --force git+<repo>@<ref>``. By default ``<ref>`` is
-    ``main``, so this command brings you to the latest unreleased work
-    on the upstream repository.
+    You installed one thing; you update one thing. This reinstalls the
+    ``amplifier-opencode`` binary from ``git+<repo>@<ref>`` (default ``main``),
+    then brings amplifier-agent up to date (force-healing it if it is below the
+    required minimum), then updates opencode.
+
+    opencode is the one component you can opt out of -- pass ``--no-opencode``
+    (or answer "no" at the prompt) to keep your pinned opencode version while
+    still updating the amplifier pieces.
 
     \b
     Examples:
 
-      amplifier-opencode update                    # latest main
-      amplifier-opencode update --ref v0.2.0       # pin to a tag
-      amplifier-opencode update --ref some-branch  # try a feature branch
-      amplifier-opencode update --force            # clobber editable install
-
-    After updating, ``amplifier-opencode doctor`` will report the new
-    version under the (now-implicit) install metadata.
+      amplifier-opencode update                    # update all three
+      amplifier-opencode update --no-opencode      # keep opencode pinned
+      amplifier-opencode update --ref v0.2.0        # pin adapter to a tag
+      amplifier-opencode update --force             # clobber editable install
     """
-    sys.exit(_run_update(ref=ref, force=force))
+    sys.exit(
+        _run_update(
+            ref=ref,
+            force=force,
+            include_opencode=not no_opencode,
+            assume_yes=assume_yes,
+        )
+    )
 
 
 # Allow ``python -m amplifier_app_opencode`` --------------------------------

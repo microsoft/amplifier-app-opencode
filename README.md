@@ -29,11 +29,67 @@ With this adapter:
 
 ---
 
-## Prerequisites
+## Install (one command)
 
-You need **a few system tools** and **three Amplifier components** installed.
-This README walks through the official install for each so a brand-new
-machine can get set up start-to-finish.
+You install one thing and run one thing. The rest of the stack heals itself.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh | bash
+```
+
+Prefer to review first (recommended for any `curl | bash`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh -o install.sh
+less install.sh
+bash install.sh
+```
+
+That installs [`uv`](https://docs.astral.sh/uv/) (if missing) and the
+`amplifier-opencode` CLI. Then just run:
+
+```bash
+amplifier-opencode
+```
+
+On first launch amplifier-opencode **self-heals the rest of the stack**:
+
+- Installs [`amplifier-agent`](https://github.com/microsoft/amplifier-agent)
+  (the backend server) if missing, and force-updates it if it is below the
+  required minimum — no "go install X yourself" dead-ends.
+- Installs [`opencode`](https://opencode.ai) (the TUI) if missing, using the
+  best method for your OS (curl installer, Homebrew, npm, scoop, or choco).
+- If no provider credentials are configured, it **walks you through connecting
+  one** (Anthropic, OpenAI, Azure, or Ollama) and stores it via amplifier-agent.
+- Anything already installed and healthy is left untouched.
+
+Want just the setup without launching? Run `amplifier-opencode setup`.
+
+Keeping everything current is also one command:
+
+```bash
+amplifier-opencode update              # update amplifier-opencode + amplifier-agent + opencode
+amplifier-opencode update --no-opencode  # update the amplifier pieces, keep opencode pinned
+```
+
+**Non-interactive / CI:** pass `--yes` (globally) to auto-install without
+prompts, e.g. `amplifier-opencode --yes setup`. Pass `--no-bootstrap` to skip
+the self-healing preflight entirely and assume the environment is ready.
+
+**Platform support:** macOS, Linux, and WSL are fully supported. On **native
+Windows**, run amplifier-opencode inside **WSL** — opencode's own docs
+recommend WSL, and the self-healing installers are bash-based. If a component
+can't be auto-installed on your platform, amplifier-opencode tells you exactly
+what to do instead of failing silently.
+
+---
+
+## Manual install (advanced)
+
+Prefer to install each component yourself? You need **a few system tools** and
+**three Amplifier components** installed. This section walks through the
+official install for each so a brand-new machine can get set up
+start-to-finish. (If you used the one-command install above, you can skip this.)
 
 ### 0. System tools — git, curl
 
