@@ -18,7 +18,7 @@ every time, with no config to maintain by hand.
 
 ---
 
-## What this gives you
+## What you get
 
 opencode is a fast terminal coding assistant. amplifier-agent is Microsoft's
 modular agent framework with a multi-provider, OpenAI-compatible HTTP face.
@@ -34,16 +34,11 @@ This adapter wires the two together so you don't have to.
 - **Drop-in opencode:** `/models`, `/connect`, and all slash commands work normally
 - **Built-in `doctor`:** diagnoses any setup issue in one command
 
-> **Two commands to know:** `amplifier-opencode launch` sets up the connection
-> **and** drops you into the opencode TUI. Plain `amplifier-opencode` just
-> refreshes the connection (starts the server, re-discovers models, rewrites the
-> config) without launching — handy after you change providers or add a key.
-
 ---
 
-## Install (one command)
+## Install
 
-You install one thing and run one thing. The rest of the stack heals itself.
+Install one thing; the rest of the stack heals itself.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh | bash
@@ -58,17 +53,17 @@ bash install.sh
 ```
 
 That installs [`uv`](https://docs.astral.sh/uv/) (if missing) and the
-`amplifier-opencode` CLI. Then just run:
+`amplifier-opencode` CLI. Then run:
 
 ```bash
-amplifier-opencode
+amplifier-opencode launch
 ```
 
-On first launch amplifier-opencode **self-heals the rest of the stack**:
+On that first run, amplifier-opencode **self-heals the rest of the stack**:
 
 - Installs [`amplifier-agent`](https://github.com/microsoft/amplifier-agent)
-  (the backend server) if missing, and force-updates it if it is below the
-  required minimum — no "go install X yourself" dead-ends.
+  (the backend server) if missing, and updates it if it's below the required
+  minimum.
 - Installs [`opencode`](https://opencode.ai) (the TUI) if missing, using the
   best method for your OS (curl installer, Homebrew, npm, scoop, or choco).
 - If no provider credentials are configured, it **walks you through connecting
@@ -77,38 +72,165 @@ On first launch amplifier-opencode **self-heals the rest of the stack**:
 
 Want just the setup without launching? Run `amplifier-opencode setup`.
 
-Keeping everything current is also one command:
+### Platform support
 
-```bash
-amplifier-opencode update              # update amplifier-opencode + amplifier-agent + opencode
-amplifier-opencode update --no-opencode  # update the amplifier pieces, keep opencode pinned
-```
-
-**Non-interactive / CI:** pass `--yes` (globally) to auto-install without
-prompts, e.g. `amplifier-opencode --yes setup`. Pass `--no-bootstrap` to skip
-the self-healing preflight entirely and assume the environment is ready.
-
-**Platform support:** macOS, Linux, and WSL are fully supported. On **native
-Windows**, run amplifier-opencode inside **WSL** — opencode's own docs
-recommend WSL, and the self-healing installers are bash-based. If a component
-can't be auto-installed on your platform, amplifier-opencode tells you exactly
-what to do instead of failing silently.
+macOS, Linux, and WSL are fully supported. On **native Windows**, run
+amplifier-opencode inside **WSL** — opencode's own docs recommend WSL, and the
+self-healing installers are bash-based. If a component can't be auto-installed
+on your platform, amplifier-opencode tells you exactly what to do instead of
+failing silently.
 
 ---
 
-## Manual install (advanced)
+## Start coding
 
-**Most people can skip this** — the one-command install above handles it all.
-This section is for anyone who wants to install each component by hand.
+```bash
+amplifier-opencode launch
+```
+
+This sets up the connection and drops you straight into the opencode TUI. The
+first time, it makes sure the whole stack is ready — installing amplifier-agent
+and opencode if needed, and walking you through connecting a provider if none is
+configured. Once everything's healthy you'll see something like:
+
+```
+[1/4] Starting amplifier-agent (port 9099, workspace='opencode')
+      amplifier-agent ready at http://127.0.0.1:9099/v1
+[2/4] Discovering models via GET http://127.0.0.1:9099/v1/models
+      - anthropic   claude-haiku-4-5-20251001            Claude Haiku 4.5
+      - anthropic   claude-opus-4-8                      Claude Opus 4.8
+      - anthropic   claude-sonnet-4-6                    Claude Sonnet 4.6
+[3/4] Wrote /Users/you/.config/opencode/opencode.jsonc  (global config)
+[4/4] Configuration complete.
+```
+
+opencode opens with the model picker under the **Amplifier** section. Pick a
+model and start coding. The config is global, so it applies from every
+directory — and it's re-synced on every run.
+
+---
+
+## Connecting a provider
+
+**You usually don't need to do anything here.** On first run (or via
+`amplifier-opencode setup`), if no provider is connected, amplifier-opencode
+walks you through picking one and pasting a key, then stores it for you.
+
+To set a key yourself instead, export one of these before running and
+amplifier-agent will pick it up automatically:
+
+| Provider | Env var |
+|---|---|
+| Anthropic (Claude) | `ANTHROPIC_API_KEY` |
+| OpenAI (GPT) | `OPENAI_API_KEY` |
+| Azure OpenAI | `AZURE_OPENAI_API_KEY` or `AZURE_OPENAI_KEY` |
+| Ollama (local models) | `OLLAMA_HOST` |
+
+Run `amplifier-opencode doctor` to see which providers will actually be served.
+
+---
+
+## Everyday use
+
+| Command | What it does |
+|---|---|
+| `amplifier-opencode launch` | Set up the bridge **and** open the opencode TUI |
+| `amplifier-opencode` | Refresh the bridge only (re-discover models, rewrite config) — no launch |
+| `amplifier-opencode setup` | Install/heal the stack and connect a provider, without launching |
+| `amplifier-opencode update` | Update amplifier-opencode, amplifier-agent, and opencode |
+| `amplifier-opencode doctor` | Diagnose every prerequisite in one shot |
+
+Run the plain `amplifier-opencode` refresh any time you change providers, add a
+credential, or restart amplifier-agent — it re-syncs opencode with whatever
+amplifier-agent is now serving.
+
+Pass arguments straight through to opencode after `--`:
+
+```bash
+amplifier-opencode launch -- run "summarise this codebase"
+```
+
+Keep everything current with one command:
+
+```bash
+amplifier-opencode update                # amplifier-opencode + amplifier-agent + opencode
+amplifier-opencode update --no-opencode  # update the Amplifier pieces, keep opencode pinned
+```
+
+### Command reference
+
+- **`amplifier-opencode launch`** — set up the bridge and exec the opencode TUI.
+  Pass-through args after `--` go to opencode.
+- **`amplifier-opencode`** (no subcommand) — set up / refresh the bridge without
+  launching.
+- **`amplifier-opencode setup`** — install and heal the stack and connect a
+  provider; no launch. Add `--yes` for non-interactive installs.
+- **`amplifier-opencode update`** — update all three components (`--no-opencode`
+  to leave opencode alone).
+- **`amplifier-opencode doctor`** — run all prerequisite checks; exit code 0 when
+  everything passes, 1 on any failure.
+
+The full flag tables for every command are in **Advanced usage** below.
+
+---
+
+## Troubleshooting
+
+Run the doctor before asking anyone for help — it reports on every prerequisite
+in one shot:
+
+```bash
+amplifier-opencode doctor
+```
+
+Output:
+
+```
+amplifier-opencode doctor
+
+  [ OK ]  amplifier-agent     amplifier-agent found at /Users/you/.local/bin/amplifier-agent
+  [ OK ]  opencode            opencode found at /Users/you/.opencode/bin/opencode
+  [ OK ]  server              amplifier-agent server running at http://127.0.0.1:9099/v1
+  [ OK ]  opencode config     opencode config has provider.amplifier with 3 models
+  [ OK ]  live models         Discovered 3 model(s): claude-haiku-4-5-20251001, ...
+
+  Providers (via `amplifier-agent providers list`):
+    ✓ anthropic resolvable (source=env) → will be served
+    ✗ openai not resolvable → set OPENAI_API_KEY or run `amplifier-agent auth set openai <key>` to enable it
+
+    → 1 provider will be auto-enabled on launch (anthropic)
+
+All required checks passed.
+```
+
+Common failures and their fix:
+
+| FAIL message | Fix |
+|---|---|
+| `amplifier-agent not on PATH` | Re-run the install one-liner, then open a new terminal |
+| `opencode not on PATH` | `curl -fsSL https://opencode.ai/install \| bash` (then open a new terminal) |
+| `No provider credentials resolvable` | Export `ANTHROPIC_API_KEY`, OR run `amplifier-agent auth set anthropic <key>` |
+| `Could not run \`amplifier-agent providers list --json\`` | Install/upgrade amplifier-agent so the doctor command can query it |
+| `opencode config ... is malformed JSON` | Open `~/.config/opencode/opencode.jsonc`, fix or delete it, retry |
+
+---
+
+## Advanced usage
 
 <details>
-<summary>Show the full step-by-step manual install</summary>
+<summary>Manual install, full flag reference, and power-user options — click to expand</summary>
 
-You need **a few system tools** and **three Amplifier components** installed.
-The steps below walk through the official install for each so a brand-new
-machine can get set up start-to-finish.
+Most people never need anything in this section — the one-command install and
+the everyday commands above cover normal use. This is here for hand-installs,
+scripting, and fine-grained control.
 
-### 0. System tools — git, curl
+### Manual install
+
+Prefer to install each component yourself? You need **a few system tools** and
+**three Amplifier components**. The steps below walk through the official
+install for each so a brand-new machine can get set up start-to-finish.
+
+#### 0. System tools — git, curl
 
 Most macOS installs already have these via Xcode Command Line Tools. On a
 fresh Linux container you'll need:
@@ -128,7 +250,7 @@ Why: `git` is required because amplifier-agent and amplifier-app-opencode are
 installed via `git+https://...` URLs (neither is on PyPI yet). `curl` is
 required by the uv and opencode one-line installers.
 
-### 1. amplifier-agent — the backend server (>= 0.9.1 required)
+#### 1. amplifier-agent — the backend server (>= 0.9.1 required)
 
 `amplifier-agent` is the OpenAI-compatible HTTP server this adapter talks to.
 Use the official one-line installer — it pulls the latest released binary and
@@ -160,7 +282,7 @@ For full install options (source builds, manual `uv tool install --from git+…`
 installer flags) see the
 [amplifier-agent README](https://github.com/microsoft/amplifier-agent#install).
 
-### 2. opencode — the TUI
+#### 2. opencode — the TUI
 
 The official one-line installer downloads the platform-native opencode binary:
 
@@ -195,7 +317,7 @@ opencode --version
 For other install methods (Homebrew, manual download, package managers) see
 [opencode.ai/docs/intro](https://opencode.ai/docs/intro).
 
-### 3. amplifier-app-opencode — this adapter
+#### 3. amplifier-app-opencode — this adapter
 
 Same uv-tool pattern as amplifier-agent:
 
@@ -208,7 +330,7 @@ amplifier-opencode --help
 
 (Once published to PyPI, this becomes `uv tool install amplifier-app-opencode`.)
 
-### 4. At least one provider credential
+#### 4. At least one provider credential
 
 amplifier-agent talks to upstream model APIs (Anthropic, OpenAI, etc.) and
 needs credentials for at least one of them. Easiest: set an environment
@@ -237,192 +359,13 @@ The amplifier-agent server uses **env-first** resolution: shell env vars win
 over the credentials file, so existing shell-rc workflows continue working
 unchanged.
 
-</details>
-
----
-
-## Provider Credentials
-
-**You usually don't need to do anything here manually.** The first time you run
-`amplifier-opencode` (or `amplifier-opencode setup`) with no provider connected,
-it walks you through picking a provider and pasting a key, then stores it for
-you. This section is reference for when you'd rather set credentials yourself.
-
-amplifier-opencode itself does no provider detection. `amplifier-agent serve`
-auto-enables every provider whose credentials resolve (env var, or
-`~/.amplifier-agent/credentials.json` via `amplifier-agent auth set`) whenever
-you don't pass it an explicit `--config`. Set one or more of the following
-environment variables (or run `amplifier-agent auth set`) before running
-`amplifier-opencode launch`:
-
-| Provider | Env var |
-|---|---|
-| Anthropic (Claude) | `ANTHROPIC_API_KEY` |
-| OpenAI (GPT) | `OPENAI_API_KEY` |
-| Azure OpenAI | `AZURE_OPENAI_API_KEY` or `AZURE_OPENAI_KEY` |
-| Ollama (local models) | `OLLAMA_HOST` |
-
-Run `amplifier-opencode doctor` to see which providers amplifier-agent will
-actually serve (it shells out to `amplifier-agent providers list --json`).
-
-### Advanced: custom host_config.json
-
-If you want fine-grained control (custom MCP servers, approval policies,
-per-provider config overrides), write your own `host_config.json` and pass
-it with `--host-config`. amplifier-opencode passes it straight through to
-`amplifier-agent serve --config`:
-
-```bash
-amplifier-opencode launch --host-config /path/to/host_config.json
-```
-
-See [amplifier-agent's host_config documentation](https://github.com/microsoft/amplifier-agent) for the full schema.
-
----
-
-## First run
-
-```bash
-amplifier-opencode
-```
-
-The very first time, amplifier-opencode makes sure the whole stack is ready
-before it does anything else: it installs or updates amplifier-agent and
-opencode if needed, and — if no provider is connected yet — walks you through
-adding one. (To do just that setup without going further, run
-`amplifier-opencode setup`.) Once everything's healthy you'll see something
-like:
-
-```
-[1/4] Starting amplifier-agent (port 9099, workspace='opencode')
-      amplifier-agent ready at http://127.0.0.1:9099/v1
-[2/4] Discovering models via GET http://127.0.0.1:9099/v1/models
-      - anthropic   claude-haiku-4-5-20251001            Claude Haiku 4.5
-      - anthropic   claude-opus-4-8                      Claude Opus 4.8
-      - anthropic   claude-sonnet-4-6                    Claude Sonnet 4.6
-[3/4] Wrote /Users/you/.config/opencode/opencode.jsonc  (global config)
-[4/4] Configuration complete.
-
-✓ opencode is configured to use Amplifier. Pick how you want to drive it:
-
-    TUI       run `opencode` in any directory
-    Desktop   open the opencode desktop app — it picks up the global config
-    Headless  opencode run "your prompt here"
-
-To jump straight into the TUI next time: amplifier-opencode launch
-```
-
-The bridge is now set up. Run `opencode` in any terminal and pick a model under
-the **Amplifier** section — or open the opencode desktop app. The global config
-applies everywhere.
-
-If you'd rather have one command that sets up the bridge AND drops you into the
-TUI, use `amplifier-opencode launch` instead.
-
----
-
-## Daily usage
-
-### Refresh the bridge
-
-```bash
-amplifier-opencode
-```
-
-Default action: check the server, start it if needed, re-discover models, and
-update `opencode.jsonc`. Doesn't launch anything — just keeps the bridge in
-sync with whatever amplifier-agent is currently serving. Run this any time you
-change providers, add credentials, or restart amplifier-agent.
-
-### Set up the bridge AND launch the TUI
-
-```bash
-amplifier-opencode launch
-```
-
-Same setup flow plus an exec into the opencode TUI. From any directory.
-
-### Pass arguments through to opencode
-
-Anything after `--` is forwarded to opencode:
-
-```bash
-amplifier-opencode launch -- run "summarise this codebase"
-```
-
-### Write to a project's opencode.json instead of the global config
-
-```bash
-cd my-project
-amplifier-opencode --project-dir .          # bridge only, into ./opencode.json
-amplifier-opencode launch --project-dir .   # bridge + TUI from this directory
-```
-
-The generated config lives in `./opencode.json`. opencode walks up from cwd to
-find it.
-
-### Point at a different amplifier-agent
-
-```bash
-# Server running on another machine or port
-amplifier-opencode --base-url http://my-server:9099/v1 --api-key my-token
-
-# Server already running — don't auto-start
-amplifier-opencode --no-start
-```
-
----
-
-## Troubleshooting
-
-Run the doctor before you ask anyone for help. It reports on every
-prerequisite in one shot:
-
-```bash
-amplifier-opencode doctor
-```
-
-Output:
-
-```
-amplifier-opencode doctor
-
-  [ OK ]  amplifier-agent     amplifier-agent found at /Users/you/.local/bin/amplifier-agent
-  [ OK ]  opencode            opencode found at /Users/you/.opencode/bin/opencode
-  [ OK ]  server              amplifier-agent server running at http://127.0.0.1:9099/v1
-  [ OK ]  opencode config     opencode config has provider.amplifier with 3 models
-  [ OK ]  live models         Discovered 3 model(s): claude-haiku-4-5-20251001, ...
-
-  Providers (via `amplifier-agent providers list`):
-    ✓ anthropic resolvable (source=env) → will be served
-    ✗ openai not resolvable → set OPENAI_API_KEY or run `amplifier-agent auth set openai <key>` to enable it
-
-    → 1 provider will be auto-enabled on launch (anthropic)
-
-All required checks passed.
-```
-
-Exit code is 0 when everything passes, 1 if any FAIL. Suitable for CI scripts.
-
-Common FAILs and their fix:
-
-| FAIL message | Fix |
-|---|---|
-| `amplifier-agent not on PATH` | Re-run the install one-liner above, then open a new terminal |
-| `opencode not on PATH` | `curl -fsSL https://opencode.ai/install \| bash` (then open a new terminal) |
-| `No provider credentials resolvable` | Export `ANTHROPIC_API_KEY`, OR run `amplifier-agent auth set anthropic <key>` |
-| `Could not run \`amplifier-agent providers list --json\`` | Install/upgrade amplifier-agent so the doctor command can query it |
-| `opencode config ... is malformed JSON` | Open `~/.config/opencode/opencode.jsonc`, fix or delete it, retry |
-
----
-
-## CLI reference
+### Full CLI reference
 
 ```
 amplifier-opencode [GLOBAL OPTIONS] [SUBCOMMAND] [SUBCOMMAND OPTIONS]
 ```
 
-### Global options
+#### Global options
 
 | Flag | Env var | Default | Purpose |
 |---|---|---|---|
@@ -431,7 +374,7 @@ amplifier-opencode [GLOBAL OPTIONS] [SUBCOMMAND] [SUBCOMMAND OPTIONS]
 | `--yes` | — | false | Assume "yes" to all prompts (install/heal without asking). For CI and non-interactive shells. |
 | `--no-bootstrap` | — | false | Skip the self-healing preflight; assume amplifier-agent and opencode are already installed. |
 
-### `launch` (default)
+#### `launch` (default)
 
 Discover models, write opencode.json, exec opencode. Run when no subcommand is given.
 
@@ -446,17 +389,17 @@ Discover models, write opencode.json, exec opencode. Run when no subcommand is g
 | `--provider-id` | — | `amplifier` | Provider ID under `provider.<id>` |
 | `OPENCODE_ARGS...` (after `--`) | — | — | Pass-through to opencode |
 
-### `doctor`
+#### `doctor`
 
 Run all prerequisite checks. No flags; honours the global `--base-url` and `--api-key`.
 
-### `setup`
+#### `setup`
 
 Make the whole stack ready without launching: install/heal amplifier-agent and
 opencode, then walk through connecting a provider if none is configured. Handy
 for a one-time "get me set up" pass. Respects the global `--yes` flag.
 
-### `update`
+#### `update`
 
 Update amplifier-opencode, then amplifier-agent, then opencode to their latest
 versions.
@@ -467,37 +410,41 @@ versions.
 | `--ref` | `main` | Git ref to install amplifier-opencode from |
 | `--force` | false | Reinstall even if already up to date |
 
----
+### Custom host_config.json
 
-## Where things live
+If you want fine-grained control (custom MCP servers, approval policies,
+per-provider config overrides), write your own `host_config.json` and pass
+it with `--host-config`. amplifier-opencode passes it straight through to
+`amplifier-agent serve --config`:
 
-| Path | What |
-|---|---|
-| `<project-dir>/opencode.json` OR `~/.config/opencode/opencode.jsonc` | Generated config (overwritten on every launch) |
-| `/tmp/amplifier-agent.log` | stdout/stderr from the spawned amplifier-agent process |
-| `/tmp/amplifier-opencode-agent.pid` | PID of the spawned amplifier-agent |
-| `~/.amplifier-agent/state/workspaces/` | amplifier-agent's session storage |
-| `~/.amplifier-agent/credentials.json` | Persistent credentials (mode 0600) — set via `amplifier-agent auth` |
-| `~/.local/share/opencode/log/opencode.log` | opencode's own log file |
+```bash
+amplifier-opencode launch --host-config /path/to/host_config.json
+```
 
----
+See [amplifier-agent's host_config documentation](https://github.com/microsoft/amplifier-agent) for the full schema.
 
-## Design notes
+### Point at a different amplifier-agent
 
-opencode's documented contract for custom OpenAI-compatible providers (the
-["Atomic Chat" pattern](https://opencode.ai/docs/providers/#atomic-chat))
-requires a **static** `models` block listing every model ID the upstream
-server serves. opencode does not auto-fetch `/v1/models` at runtime for
-custom-config providers.
+```bash
+# Server running on another machine or port
+amplifier-opencode --base-url http://my-server:9099/v1 --api-key my-token
 
-Rather than maintain the model list by hand or attempt fragile runtime
-monkey-patches against opencode's internals, this binary **materialises the
-static config from the live `/v1/models` response before opencode launches**.
-Every invocation re-syncs. The model list is therefore always live; the
-"static" nature of opencode's config is just an implementation detail.
+# Server already running — don't auto-start
+amplifier-opencode --no-start
+```
 
-opencode itself is unmodified. The adapter lives entirely outside both
-upstream projects — no plugins, no patches, no npm packages, no JavaScript.
+### Write to a project's opencode.json instead of the global config
+
+```bash
+cd my-project
+amplifier-opencode --project-dir .          # bridge only, into ./opencode.json
+amplifier-opencode launch --project-dir .   # bridge + TUI from this directory
+```
+
+The generated config lives in `./opencode.json`. opencode walks up from cwd to
+find it.
+
+</details>
 
 ---
 
