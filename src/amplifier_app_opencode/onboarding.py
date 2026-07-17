@@ -23,25 +23,76 @@ import click
 from . import platform_utils as plat
 from . import prereqs
 
-# Providers amplifier-agent understands, in the order we present them.
-# ``key_style`` drives the prompt wording; ``ollama`` takes a host URL, not a
-# secret key.
-
 
 @dataclass(frozen=True)
 class Provider:
+    """Presentation metadata for one provider the wizard can configure.
+
+    ``provider_id`` is the exact token ``amplifier-agent auth set`` expects --
+    it is the provider's ``name`` from ``amplifier-agent providers list --json``.
+    The remaining fields are pure presentation (prompt wording, whether the
+    value is a secret to mask, whether a separate endpoint URL is required).
+    """
+
     provider_id: str
     label: str
     prompt: str
     secret: bool = True
+    needs_endpoint: bool = False
+    endpoint_prompt: str = "Endpoint URL"
 
 
-PROVIDERS: tuple[Provider, ...] = (
-    Provider("anthropic", "Anthropic (Claude)", "Anthropic API key"),
-    Provider("openai", "OpenAI (GPT)", "OpenAI API key"),
-    Provider("azure", "Azure OpenAI", "Azure OpenAI API key"),
-    Provider("ollama", "Ollama (local models)", "Ollama host URL", secret=False),
-)
+# Presentation overlay, keyed by the agent's own provider id (``name``). The
+# agent is the source of truth for *which* providers exist; this table only
+# supplies human wording the report doesn't carry. Any id we don't recognise
+# still gets offered via a generic masked-secret prompt (see
+# ``_presentation_for``), so a newly-added agent provider works with no change
+# here. ``ollama`` takes a host URL, not a secret. ``azure-openai`` also needs
+# an endpoint URL alongside the key.
+_PRESENTATION: dict[str, Provider] = {
+    "anthropic": Provider("anthropic", "Anthropic (Claude)", "Anthropic API key"),
+    "openai": Provider("openai", "OpenAI (GPT)", "OpenAI API key"),
+    "azure-openai": Provider(
+        "azure-openai",
+        "Azure OpenAI",
+        "Azure OpenAI API key",
+        needs_endpoint=True,
+        endpoint_prompt="Azure OpenAI endpoint URL (https://<resource>.openai.azure.com)",
+    ),
+    "ollama": Provider("ollama", "Ollama (local models)", "Ollama host URL", secret=False),
+}
+
+
+def _presentation_for(provider_id: str) -> Provider:
+    """Presentation metadata for ``provider_id``, generic fallback if unknown."""
+    known = _PRESENTATION.get(provider_id)
+    if known is not None:
+        return known
+    # Unknown to our overlay: offer it generically as a masked secret so the
+    # wizard keeps working when the agent gains a provider before we do.
+    return Provider(provider_id, provider_id, f"{provider_id} API key")
+
+
+def _available_providers() -> tuple[Provider, ...]:
+    """Providers to offer, sourced from the agent's own report.
+
+    The agent's ``providers list --json`` ``name`` values are exactly what
+    ``auth set`` accepts, so we enumerate from there and overlay presentation
+    metadata -- no hardcoded id list to drift out of sync. If the report is
+    unreadable (agent missing / offline) we fall back to the overlay's own ids
+    so the wizard still functions.
+    """
+    report = prereqs.fetch_provider_report()
+    names: list[str] = []
+    if report is not None:
+        names = [
+            row["name"]
+            for row in report.get("providers", [])
+            if isinstance(row.get("name"), str) and row["name"]
+        ]
+    if not names:
+        return tuple(_PRESENTATION.values())
+    return tuple(_presentation_for(name) for name in names)
 
 
 def _agent_bin() -> str | None:
@@ -59,17 +110,32 @@ def needs_onboarding() -> bool:
     return resolvable is False
 
 
-def _auth_set(agent_bin: str, provider: Provider, value: str) -> bool:
-    """Store a credential via ``amplifier-agent auth set <provider> <value>``."""
+def _auth_set(
+    agent_bin: str, provider: Provider, value: str, *, endpoint: str | None = None
+) -> bool:
+    """Store a credential via ``amplifier-agent auth set <provider> <value>``.
+
+    Providers that need a separate endpoint (Azure OpenAI) pass it through as
+    ``--endpoint <url>``.
+    """
     click.secho(f"  Storing {provider.label} credentials via amplifier-agent ...", fg="cyan")
+    cmd = [agent_bin, "auth", "set", provider.provider_id, value]
+    if endpoint:
+        cmd += ["--endpoint", endpoint]
     try:
         result = subprocess.run(
-            [agent_bin, "auth", "set", provider.provider_id, value],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30.0,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired:
+        # NOTE: never format the TimeoutExpired object -- its str() embeds the
+        # full cmd list, which contains the plaintext secret in ``value``.
+        click.secho("  \u2717 amplifier-agent auth set timed out after 30s", fg="red")
+        return False
+    except OSError as exc:
+        # OSError.str() is strerror/errno, not the argv -- safe to surface.
         click.secho(f"  \u2717 could not run amplifier-agent auth set: {exc}", fg="red")
         return False
     if result.returncode != 0:
@@ -111,11 +177,12 @@ def run_onboarding(*, assume_yes: bool) -> bool:
         _print_manual_guidance()
         return False
 
-    # Present the menu.
-    for idx, prov in enumerate(PROVIDERS, start=1):
+    # Present the menu, enumerated from the agent's own provider report.
+    providers = _available_providers()
+    for idx, prov in enumerate(providers, start=1):
         click.echo(f"    {idx}. {prov.label}")
-    choice = click.prompt("  Choose a provider", type=click.IntRange(1, len(PROVIDERS)), default=1)
-    provider = PROVIDERS[choice - 1]
+    choice = click.prompt("  Choose a provider", type=click.IntRange(1, len(providers)), default=1)
+    provider = providers[choice - 1]
 
     value = click.prompt(f"  {provider.prompt}", hide_input=provider.secret).strip()
     if not value:
@@ -123,7 +190,15 @@ def run_onboarding(*, assume_yes: bool) -> bool:
         _print_manual_guidance()
         return False
 
-    if not _auth_set(agent_bin, provider, value):
+    endpoint: str | None = None
+    if provider.needs_endpoint:
+        endpoint = click.prompt(f"  {provider.endpoint_prompt}").strip()
+        if not endpoint:
+            click.secho("  No endpoint entered; skipping.", fg="yellow")
+            _print_manual_guidance()
+            return False
+
+    if not _auth_set(agent_bin, provider, value, endpoint=endpoint):
         return False
 
     # Re-verify: the agent should now report at least one resolvable provider.

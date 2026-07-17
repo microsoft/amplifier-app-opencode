@@ -38,7 +38,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -86,11 +85,9 @@ DEFAULT_MAX_CONTEXT: int | None = None
 PACKAGE_NAME = "amplifier-app-opencode"
 REPO_URL = "https://github.com/microsoft/amplifier-app-opencode.git"
 
-# Minimum amplifier-agent version amplifier-opencode requires. amplifier-agent
-# >= 0.9.1 resolves provider credentials from credentials.json at serve startup
-# (#82); older agents leave providers unserved because opencode no longer
-# injects provider env vars itself.
-MIN_AGENT_VERSION = "0.9.1"
+# The minimum amplifier-agent version and the version-comparison helpers live in
+# one place -- prereqs.py -- and are used from here via ``prereqs.<name>``. Keep
+# them defined once so the floor can never disagree with itself across files.
 
 # Resolved via platform_utils so they land in %TEMP% on native Windows instead
 # of a non-existent /tmp. Tests monkeypatch these module attributes directly.
@@ -667,40 +664,6 @@ _INFO = "[INFO]"
 _WARN = "[WARN]"
 
 
-def _extract_semver(text: str) -> tuple[int, int, int] | None:
-    """Pull the first X.Y.Z out of a version string.
-
-    e.g. ``amplifier-agent, version 0.9.1`` -> ``(0, 9, 1)``.
-    """
-    m = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
-    if not m:
-        return None
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-
-
-def _agent_version_ok(version_text: str, minimum: str = MIN_AGENT_VERSION) -> bool:
-    """True if the agent version string is >= minimum (semver tuple compare)."""
-    have = _extract_semver(version_text)
-    want = _extract_semver(minimum)
-    if have is None or want is None:
-        return False
-    return have >= want
-
-
-def _binary_version(binary: str, version_flag: str = "--version") -> str:
-    """Best-effort version string for a binary. Returns "?" on failure."""
-    try:
-        r = subprocess.run(
-            [binary, version_flag],
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-        )
-        return (r.stdout or r.stderr).strip().splitlines()[0]
-    except (OSError, subprocess.TimeoutExpired, IndexError):
-        return "?"
-
-
 def _check_amplifier_agent_binary() -> tuple[str, str]:
     """Check 1: amplifier-agent binary on PATH."""
     binary = shutil.which("amplifier-agent")
@@ -711,16 +674,16 @@ def _check_amplifier_agent_binary() -> tuple[str, str]:
             "`uv tool install amplifier-agent` or see "
             "https://github.com/microsoft/amplifier-agent.",
         )
-    version = _binary_version(binary)
-    if not _agent_version_ok(version):
+    version = prereqs.binary_version(binary)
+    if not prereqs.version_ge(version, prereqs.MIN_AGENT_VERSION):
         return (
             _FAIL,
             f"amplifier-agent at {binary} is {version}; amplifier-opencode "
-            f"requires >= {MIN_AGENT_VERSION} (the agent resolves provider "
+            f"requires >= {prereqs.MIN_AGENT_VERSION} (the agent resolves provider "
             "credentials at serve startup). Update with `amplifier-agent "
             "update`, or `amplifier-opencode update` to update both.",
         )
-    return _OK, f"amplifier-agent found at {binary} ({version}, >= {MIN_AGENT_VERSION})"
+    return _OK, f"amplifier-agent found at {binary} ({version}, >= {prereqs.MIN_AGENT_VERSION})"
 
 
 def _check_opencode_binary() -> tuple[str, str]:
@@ -733,7 +696,7 @@ def _check_opencode_binary() -> tuple[str, str]:
             "`curl -fsSL https://opencode.ai/install | bash` or see "
             "https://opencode.ai/docs/intro for other methods.",
         )
-    version = _binary_version(binary)
+    version = prereqs.binary_version(binary)
     return _OK, f"opencode found at {binary} ({version})"
 
 

@@ -195,6 +195,9 @@ def fetch_provider_report(binary: str | None = None) -> dict[str, Any] | None:
         return None
     if not isinstance(payload, dict) or not isinstance(payload.get("providers"), list):
         return None
+    # Drop any non-dict rows so every downstream ``row.get(...)`` is safe.
+    # A malformed row degrades to "one fewer provider", never an AttributeError.
+    payload["providers"] = [row for row in payload["providers"] if isinstance(row, dict)]
     return payload
 
 
@@ -282,8 +285,15 @@ def _run_bash_pipe(url: str, *, what: str) -> bool:
         if curl_proc.stdout:
             curl_proc.stdout.close()
         rc = bash_proc.wait()
+        # Must also check curl: with `-fsSL` a failed fetch (404, TLS, network)
+        # exits non-zero with empty stdout, so bash reads nothing and exits 0.
+        # Checking only bash would report success on a silently-failed download.
+        curl_rc = curl_proc.wait()
     except OSError as exc:
         click.secho(f"    ! {what} could not run: {exc}", fg="yellow")
+        return False
+    if curl_rc != 0:
+        click.secho(f"    ! {what}: download failed (curl exited {curl_rc})", fg="yellow")
         return False
     return rc == 0
 
