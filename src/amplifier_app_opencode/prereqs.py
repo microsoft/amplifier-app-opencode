@@ -361,19 +361,14 @@ def ensure_agent(*, assume_yes: bool, allow_install: bool) -> bool:
             return True
         # Freshly installed but somehow below floor -> force to latest.
 
-    # Present but below the required minimum -> heal it.
+    # Present but below the required minimum -> heal it. Anything below the
+    # minimum is too old to trust its own `update` subcommand, so heal with a
+    # forced reinstall rather than a self-update.
     click.secho(
         f"  amplifier-agent {status.version} is below required {MIN_AGENT_VERSION}; healing ...",
         fg="yellow",
     )
-    # Below the hard floor, the agent's own `update` may not exist / be
-    # reliable -> go straight to a forced reinstall. Otherwise try the
-    # graceful self-update first, then escalate.
-    healed = False
-    if version_ge(status.version or "0.0.0", AGENT_HARD_FLOOR):
-        healed = _run([status.path or AGENT_BIN, "update"], what="amplifier-agent update")
-    if not healed or not detect_agent().meets_min:
-        healed = force_reinstall_agent()
+    force_reinstall_agent()
 
     final = detect_agent()
     if final.present and final.meets_min:
