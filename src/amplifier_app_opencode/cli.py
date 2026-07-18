@@ -42,6 +42,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -450,12 +451,18 @@ def write_opencode_config(
     if config_path.exists():
         try:
             text = config_path.read_text() or "{}"
-            existing = json.loads(text)
+            loaded = json.loads(text)
         except json.JSONDecodeError as exc:
             raise click.ClickException(
                 f"Existing {config_path} is not valid JSON: {exc}. "
                 "Remove or fix the file, then retry."
             ) from exc
+        if not isinstance(loaded, dict):
+            raise click.ClickException(
+                f"Existing {config_path} is valid JSON but not an object "
+                f"(found {type(loaded).__name__}); refusing to overwrite."
+            )
+        existing = loaded
 
     existing.setdefault("$schema", "https://opencode.ai/config.json")
     existing.setdefault("provider", {})
@@ -465,7 +472,20 @@ def write_opencode_config(
         )
     existing["provider"][provider_id] = provider
 
-    config_path.write_text(json.dumps(existing, indent=2, sort_keys=False) + "\n")
+    # Atomic write: render to a sibling temp file, then os.replace() into place.
+    # A crash mid-write leaves the original config intact rather than truncated.
+    payload = json.dumps(existing, indent=2, sort_keys=False) + "\n"
+    fd, tmp_name = tempfile.mkstemp(
+        dir=config_path.parent, prefix=f".{config_path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as tmp_file:
+            tmp_file.write(payload)
+        os.replace(tmp_path, config_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return config_path
 
 

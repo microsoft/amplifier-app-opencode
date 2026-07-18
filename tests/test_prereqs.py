@@ -110,6 +110,86 @@ def test_ensure_agent_stale_force_heals(monkeypatch: pytest.MonkeyPatch) -> None
     assert calls["force"] == 1
 
 
+def test_ensure_agent_stale_bootstrap_disabled_no_heal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present-but-stale + allow_install=False must NOT reinstall behind the caller."""
+    monkeypatch.setattr(prereqs, "detect_agent", lambda: _status(True, "0.8.0", False))
+    monkeypatch.setattr(
+        prereqs,
+        "force_reinstall_agent",
+        lambda: pytest.fail("must not reinstall when bootstrap is disabled"),
+    )
+    assert prereqs.ensure_agent(assume_yes=True, allow_install=False) is False
+
+
+# ---------------------------------------------------------------------------
+# _run_bash_pipe: curl exit-code checking
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    def __init__(self, rc: int) -> None:
+        self._rc = rc
+        self.stdout = None
+
+    def wait(self) -> int:
+        return self._rc
+
+
+def test_run_bash_pipe_curl_failure_is_not_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A silent curl failure (nonzero) must fail even when bash exits 0.
+
+    With ``curl -fsSL`` a failed fetch exits nonzero with empty stdout, so the
+    piped bash reads nothing and exits 0. Checking only bash would wrongly
+    report success -- the curl return code is the load-bearing check.
+    """
+    monkeypatch.setattr(prereqs.plat, "can_run_bash_installer", lambda: True)
+    monkeypatch.setattr(prereqs.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    # First Popen -> curl (fails, rc=22); second Popen -> bash (rc=0).
+    procs = iter([_FakeProc(22), _FakeProc(0)])
+    monkeypatch.setattr(prereqs.subprocess, "Popen", lambda *a, **kw: next(procs))
+
+    assert prereqs._run_bash_pipe("https://example/install.sh", what="opencode") is False
+
+
+# ---------------------------------------------------------------------------
+# get_self_install_info: source detection
+# ---------------------------------------------------------------------------
+
+
+class _FakeDist:
+    def __init__(self, version: str, direct_url: str | None) -> None:
+        self.metadata = {"Version": version}
+        self._direct_url = direct_url
+
+    def read_text(self, name: str) -> str | None:
+        return self._direct_url if name == "direct_url.json" else None
+
+
+def test_get_self_install_info_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    direct_url = (
+        '{"url": "https://github.com/microsoft/amplifier-app-opencode.git", '
+        '"vcs_info": {"vcs": "git", "commit_id": "abc123"}}'
+    )
+    monkeypatch.setattr(prereqs, "distribution", lambda name: _FakeDist("0.1.0", direct_url))
+
+    info = prereqs.get_self_install_info()
+    assert info["source"] == "git"
+    assert info["version"] == "0.1.0"
+    assert info["commit"] == "abc123"
+    assert info["url"] == "https://github.com/microsoft/amplifier-app-opencode.git"
+
+
+def test_get_self_install_info_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise(name: str) -> object:
+        raise prereqs.PackageNotFoundError(name)
+
+    monkeypatch.setattr(prereqs, "distribution", _raise)
+    info = prereqs.get_self_install_info()
+    assert info["source"] == "unknown"
+    assert info["version"] == "?"
+
+
 # ---------------------------------------------------------------------------
 # opencode update fallbacks
 # ---------------------------------------------------------------------------

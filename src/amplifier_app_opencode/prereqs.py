@@ -364,6 +364,21 @@ def ensure_agent(*, assume_yes: bool, allow_install: bool) -> bool:
     # Present but below the required minimum -> heal it. Anything below the
     # minimum is too old to trust its own `update` subcommand, so heal with a
     # forced reinstall rather than a self-update.
+    #
+    # Healing does not prompt (assume_yes is irrelevant here): a stale agent
+    # breaks the adapter, so bringing it to the floor is the whole point of the
+    # check. But when bootstrap is disabled (allow_install=False) we must not
+    # reinstall behind the caller's back -- honor the same opt-out as the
+    # not-present branch above and report instead.
+    if not allow_install:
+        click.secho(
+            f"  \u2717 amplifier-agent {status.version} is below required "
+            f"{MIN_AGENT_VERSION} (bootstrap disabled). "
+            f"Update: uv tool install --force --from git+{AGENT_REPO} amplifier-agent",
+            fg="red",
+        )
+        return False
+
     click.secho(
         f"  amplifier-agent {status.version} is below required {MIN_AGENT_VERSION}; healing ...",
         fg="yellow",

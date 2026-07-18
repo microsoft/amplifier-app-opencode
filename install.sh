@@ -76,3 +76,5 @@ echo "without launching, run:  amplifier-opencode setup"
 echo
 echo "If 'amplifier-opencode' is not found, open a new terminal (uv adds"
 echo "~/.local/bin to PATH) or run:  export PATH=\"\$HOME/.local/bin:\$PATH\""
+echo
+echo "To uninstall the CLI later:  uv tool uninstall amplifier-app-opencode"
