@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -49,6 +50,8 @@ from typing import Any
 
 import click
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -120,6 +123,13 @@ MODEL_PRICING_PER_MILLION: dict[str, dict[str, float]] = {
         "cache_write": 1.25,
     },
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+    # Model id amplifier-agent's anthropic provider module actually advertises
+    # for the current Sonnet generation (see amplifier_module_provider_anthropic
+    # /_cost.py). Same standard rates as the 4.x Sonnet tier -- Anthropic did
+    # not change list pricing at the Sonnet 5 launch. Previously missing from
+    # this catalog entirely, which rendered Sonnet 5 sessions costless in
+    # opencode (amplifier-support#352).
+    "claude-sonnet-5": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
     "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     # ===== OpenAI =====
     # GPT-4o
@@ -156,15 +166,64 @@ MODEL_PRICING_PER_MILLION: dict[str, dict[str, float]] = {
 }
 
 
+# Family-tier fallback rates, keyed by the substring that identifies an
+# Anthropic model family in its id (case-insensitive). Used only when an
+# exact match is not found in MODEL_PRICING_PER_MILLION -- see
+# lookup_pricing() below. The haiku default mirrors the existing
+# claude-haiku-4-5-20251001 entry rather than re-stating its numbers, so the
+# two can never drift apart.
+_ANTHROPIC_FAMILY_FALLBACK_ORDER: tuple[str, ...] = ("opus", "sonnet", "haiku")
+
+_ANTHROPIC_FAMILY_FALLBACK_RATES: dict[str, dict[str, float]] = {
+    "opus": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
+    "sonnet": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+    "haiku": MODEL_PRICING_PER_MILLION["claude-haiku-4-5-20251001"],
+}
+
+
 def lookup_pricing(model_id: str) -> dict[str, float] | None:
     """Return per-million-token pricing for ``model_id``, or None when absent.
 
-    Exact-match lookup against :data:`MODEL_PRICING_PER_MILLION`. Returns
-    ``None`` for unknown models so callers can distinguish "no pricing
-    declared" from "free model" (emitting zeros would falsely claim the
-    model is free).
+    Two-tier lookup:
+
+    1. Exact match against :data:`MODEL_PRICING_PER_MILLION`. Always wins
+       when present -- a real, verified catalog entry is always preferred
+       over an approximation.
+    2. Family fallback: if ``model_id`` contains ``"opus"``, ``"sonnet"``,
+       or ``"haiku"`` (case-insensitive) but has no exact entry -- e.g. a
+       new Anthropic model release that shipped before this catalog was
+       updated -- return that family's standard tier rates instead of
+       silently returning ``None``. A ``None`` here would make opencode
+       render the session as costless ($0.00), which is a worse and more
+       misleading failure mode than an approximate-but-nonzero price. A
+       WARNING is logged so the approximation is visible rather than
+       silent.
+
+    Returns ``None`` only when the id is unrecognized entirely (no exact
+    match and no Anthropic family keyword) so callers can still distinguish
+    "no pricing declared" from "free model".
+
+    Note: this catalog (exact or fallback) only drives opencode's TUI cost
+    *display*. The authoritative per-turn dollar amount is amplifier-agent's
+    own ``usage.cost_usd`` on the wire, tracked separately.
     """
-    return MODEL_PRICING_PER_MILLION.get(model_id)
+    exact = MODEL_PRICING_PER_MILLION.get(model_id)
+    if exact is not None:
+        return exact
+
+    lowered = model_id.lower()
+    for family in _ANTHROPIC_FAMILY_FALLBACK_ORDER:
+        if family in lowered:
+            logger.warning(
+                "No exact pricing entry for model %r; using approximate "
+                "%s-tier rates. Update MODEL_PRICING_PER_MILLION with the "
+                "verified price for this model.",
+                model_id,
+                family,
+            )
+            return _ANTHROPIC_FAMILY_FALLBACK_RATES[family]
+
+    return None
 
 
 def resolve_global_config_path() -> Path:
