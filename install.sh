@@ -49,8 +49,11 @@ else
   command -v curl >/dev/null 2>&1 || die "curl is required to install uv."
   curl -fsSL https://astral.sh/uv/install.sh | sh
   # The uv installer drops the binary in ~/.local/bin (or $XDG_BIN_HOME); make
-  # sure it is visible to THIS shell so the next step can use it.
-  export PATH="${HOME}/.local/bin:${XDG_BIN_HOME:-}:${PATH}"
+  # sure it is visible to THIS shell so the next step can use it. Only prepend
+  # $XDG_BIN_HOME when it is actually set -- an empty value would leave a "::"
+  # in PATH, which POSIX reads as the current directory (a footgun).
+  export PATH="${HOME}/.local/bin:${PATH}"
+  [ -n "${XDG_BIN_HOME:-}" ] && export PATH="${XDG_BIN_HOME}:${PATH}"
   command -v uv >/dev/null 2>&1 || die "uv installed but not on PATH. Open a new terminal and re-run."
   ok "✓ uv installed: $(uv --version 2>/dev/null || echo present)"
 fi

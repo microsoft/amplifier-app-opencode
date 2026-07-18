@@ -292,12 +292,20 @@ def fetch_models(base_url: str, api_key: str) -> list[dict[str, Any]]:
         timeout=15.0,
     )
     r.raise_for_status()
-    data = r.json().get("data", [])
+    body = r.json()
+    if not isinstance(body, dict):
+        raise click.ClickException(
+            f"/v1/models returned malformed body: {type(body).__name__}, expected object"
+        )
+    data = body.get("data", [])
     if not isinstance(data, list):
         raise click.ClickException(
             f"/v1/models returned malformed data: {type(data).__name__}, expected list"
         )
-    return data
+    # Keep only well-formed row objects. A stray scalar/None in the array would
+    # crash every downstream consumer (the discovery print loop, provider-block
+    # build, and the doctor enumeration), so filter it out at the source.
+    return [m for m in data if isinstance(m, dict)]
 
 
 def build_provider_block(
@@ -613,9 +621,13 @@ def _run_launch(
             fg="yellow",
         )
     for m in models:
-        provider_tag = m.get("_provider", "?")
+        # Coerce to str: the ``:10s`` / ``:35s`` format specs raise TypeError on
+        # a non-string value (e.g. a numeric id), so never feed them raw fields.
+        provider_tag = str(m.get("_provider", "?"))
+        model_id = str(m.get("id", "?"))
+        display = str(m.get("display_name") or "")
         click.secho(
-            f"      - {provider_tag:10s}  {m.get('id', '?'):35s}  {m.get('display_name', '')}",
+            f"      - {provider_tag:10s}  {model_id:35s}  {display}",
             fg="white",
         )
 
@@ -817,7 +829,7 @@ def _check_live_models(base_url: str, api_key: str) -> tuple[str, str]:
         return _FAIL, f"/v1/models failed: {exc}"
     if not models:
         return _WARN, "/v1/models returned 0 models"
-    ids = ", ".join(m.get("id", "?") for m in models[:5])
+    ids = ", ".join(str(m.get("id", "?")) for m in models[:5])
     suffix = "..." if len(models) > 5 else ""
     return _OK, f"Discovered {len(models)} model(s): {ids}{suffix}"
 

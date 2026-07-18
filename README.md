@@ -259,11 +259,12 @@ primes the bundle cache so the first run is instant:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash
 
-# to pin a specific version instead of latest:
-#   curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash -s -- --tag v0.9.0
+# to pin a specific version instead of latest (must be >= 0.9.1, the floor
+# amplifier-opencode enforces):
+#   curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash -s -- --tag v0.9.1
 
 # ensure ~/.local/bin is on PATH, then verify:
-amplifier-agent version --json   # → {"version":"0.9.0","protocolVersion":"0.3.0"}
+amplifier-agent version --json   # → {"version":"0.9.1","protocolVersion":"0.3.0"}
 ```
 
 The installer needs [`uv`](https://docs.astral.sh/uv/) and `curl` on PATH and

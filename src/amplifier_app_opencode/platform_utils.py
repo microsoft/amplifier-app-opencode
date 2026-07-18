@@ -127,7 +127,9 @@ def opencode_install_method(binary_path: str | None) -> str:
         return "curl"
     if "cellar" in p or "/homebrew/" in p or "linuxbrew" in p:
         return "brew"
-    if "node_modules" in p or "/npm/" in p or "\\npm\\" in p:
+    # ``p`` has already had every backslash rewritten to ``/`` above, so a
+    # ``\npm\`` probe here could never match -- match the normalized form only.
+    if "node_modules" in p or "/npm/" in p:
         return "npm"
     if "scoop" in p:
         return "scoop"

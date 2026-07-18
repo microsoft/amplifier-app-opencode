@@ -140,6 +140,11 @@ def _auth_set(
         return False
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
+        # The agent may echo the argv (including the secret) back in its error
+        # text; scrub the value so it never lands in our output. Same rule as
+        # the TimeoutExpired branch above -- the plaintext key must not leak.
+        if value:
+            detail = detail.replace(value, "***")
         click.secho(f"  \u2717 amplifier-agent auth set failed: {detail}", fg="red")
         return False
     return True
