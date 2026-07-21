@@ -1006,15 +1006,14 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
     click.echo(f"amplifier-opencode {__version__}")
 
     agent = prereqs.detect_agent()
+    minimum = f"minimum required {prereqs.MIN_AGENT_VERSION}"
     if agent.present:
         semver = prereqs.extract_semver(agent.version or "")
         shown = ".".join(str(n) for n in semver) if semver else (agent.version or "unknown")
-        floor_note = "" if agent.meets_min else "  (below required minimum)"
-        click.echo(f"amplifier-agent    {shown} (installed){floor_note}")
+        state = "installed" if agent.meets_min else "installed, below minimum"
+        click.echo(f"amplifier-agent    {shown} ({state}; {minimum})")
     else:
-        click.echo("amplifier-agent    not installed")
-
-    click.echo(f"minimum required amplifier-agent: {prereqs.MIN_AGENT_VERSION}")
+        click.echo(f"amplifier-agent    not installed ({minimum})")
     ctx.exit()
 
 
