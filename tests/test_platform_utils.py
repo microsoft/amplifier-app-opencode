@@ -34,7 +34,6 @@ def test_os_label_wsl(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_temp_paths_use_tempdir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(plat.tempfile, "gettempdir", lambda: "/somewhere/tmp")
     assert str(plat.server_log_path()) == "/somewhere/tmp/amplifier-agent.log"
-    assert str(plat.pid_file_path()) == "/somewhere/tmp/amplifier-opencode-agent.pid"
 
 
 @pytest.mark.parametrize(

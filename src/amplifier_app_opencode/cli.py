@@ -28,9 +28,12 @@ or Ollama or anything else, the next launch picks it up automatically.
 
 Subcommands:
 
-  amplifier-opencode             default: discover + write + launch
-  amplifier-opencode launch      explicit launch (same as default)
+  amplifier-opencode             default: discover + write the bridge config
+                                 (does NOT exec opencode)
+  amplifier-opencode prepare     same as the default; explicit form for scripts
+  amplifier-opencode launch      same setup, then exec the opencode TUI
   amplifier-opencode doctor      health checks for all prerequisites
+  amplifier-opencode update      reinstall amplifier-opencode from latest main
 """
 
 from __future__ import annotations
@@ -93,7 +96,6 @@ REPO_URL = "https://github.com/microsoft/amplifier-app-opencode.git"
 # Resolved via platform_utils so they land in %TEMP% on native Windows instead
 # of a non-existent /tmp. Tests monkeypatch these module attributes directly.
 SERVER_LOG_PATH = plat.server_log_path()
-PID_FILE = plat.pid_file_path()
 
 # Global opencode config dir (XDG-aligned).
 GLOBAL_OPENCODE_DIR = Path.home() / ".config" / "opencode"
@@ -227,9 +229,9 @@ def start_amplifier_agent(
 ) -> subprocess.Popen[bytes]:
     """Spawn ``amplifier-agent serve chat-completions`` in the background.
 
-    Output is appended to /tmp/amplifier-agent.log. PID is written to
-    /tmp/amplifier-opencode-agent.pid so subsequent ``amplifier-opencode``
-    invocations can detect (and optionally clean up) the same instance.
+    Output is appended to /tmp/amplifier-agent.log. Liveness of an
+    already-running instance is detected via an HTTP probe
+    (``server_is_running``), not a PID file.
     """
     binary = binary or shutil.which("amplifier-agent")
     if not binary:
@@ -261,7 +263,6 @@ def start_amplifier_agent(
         stdin=subprocess.DEVNULL,
         start_new_session=True,  # so amplifier-agent survives our exec
     )
-    PID_FILE.write_text(f"{proc.pid}\n")
     return proc
 
 

@@ -136,9 +136,8 @@ def _patch_launch_deps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     )
     # Don't actually exec opencode.
     monkeypatch.setattr("amplifier_app_opencode.cli.exec_opencode", lambda *a, **kw: None)
-    # Avoid touching /tmp/amplifier-agent.log and pid file.
+    # Avoid touching /tmp/amplifier-agent.log.
     monkeypatch.setattr("amplifier_app_opencode.cli.SERVER_LOG_PATH", tmp_path / "agent.log")
-    monkeypatch.setattr("amplifier_app_opencode.cli.PID_FILE", tmp_path / "agent.pid")
 
 
 def test_launch_passes_no_config_when_no_flag_given(

@@ -100,11 +100,6 @@ def server_log_path() -> Path:
     return temp_dir() / "amplifier-agent.log"
 
 
-def pid_file_path() -> Path:
-    """Where the spawned amplifier-agent PID is recorded."""
-    return temp_dir() / "amplifier-opencode-agent.pid"
-
-
 # ---------------------------------------------------------------------------
 # Package-manager / install-method detection
 # ---------------------------------------------------------------------------
