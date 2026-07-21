@@ -52,9 +52,12 @@ OPENCODE_BIN = "opencode"
 OPENCODE_INSTALL_SH = "https://opencode.ai/install"
 OPENCODE_NPM_PACKAGE = "opencode-ai"
 
-# Minimum amplifier-agent version amplifier-opencode requires. >= 0.9.1
-# resolves provider credentials from credentials.json at serve startup (#82).
-MIN_AGENT_VERSION = "0.9.1"
+# Minimum amplifier-agent version amplifier-opencode requires. >= 0.9.3
+# is the first version that ships `auth set --stdin`, which onboarding uses to
+# hand the provider key to the agent off-argv. Earlier builds (incl. 0.9.1/0.9.2,
+# which added credential resolution in #82) lack the flag, so the floor forces
+# ensure_agent to heal stale installs before the stdin path runs.
+MIN_AGENT_VERSION = "0.9.3"
 # Below this floor the agent's own ``update`` subcommand is unreliable/absent,
 # so we skip it and go straight to a forced reinstall. Kept equal to the
 # required minimum: anything under the minimum is "too old to trust its self
