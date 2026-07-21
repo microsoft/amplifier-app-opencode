@@ -14,6 +14,20 @@ dependencies = [
 [project.scripts]
 amplifier-opencode = "amplifier_app_opencode.cli:main"
 
+[dependency-groups]
+dev = [
+  "pytest>=8.4",
+  # AI-user judge. Uses Anthropic native structured outputs (output_config.format),
+  # which is GA in recent SDKs; pinned to a version verified to support it. judge.py
+  # falls back to httpx (a runtime dep) when `anthropic` is not importable.
+  "anthropic>=0.117",
+]
+
+[tool.pytest.ini_options]
+markers = [
+  "dtu: DTU-based end-to-end tests requiring amplifier-digital-twin",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

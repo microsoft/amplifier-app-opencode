@@ -397,6 +397,15 @@ upstream projects — no plugins, no patches, no npm packages, no JavaScript.
 
 ---
 
+## Testing
+
+End-to-end tests drive the real opencode TUI inside an isolated DTU container and verify
+the full `amplifier-opencode -> opencode -> amplifier-agent` path. See
+[docs/E2E_TESTING.md](docs/E2E_TESTING.md) for how the framework works and how to run and
+add tests.
+
+---
+
 ## Contributing
 
 > [!NOTE]
