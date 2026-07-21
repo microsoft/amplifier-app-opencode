@@ -58,6 +58,11 @@ OPENCODE_NPM_PACKAGE = "opencode-ai"
 # which added credential resolution in #82) lack the flag, so the floor forces
 # ensure_agent to heal stale installs before the stdin path runs.
 MIN_AGENT_VERSION = "0.9.3"
+# The silent, launch-time auto-install/self-heal targets this exact known-good
+# git tag rather than a moving branch, so a reliability tool never drags users
+# onto un-vetted ``main``. Kept in lockstep with MIN_AGENT_VERSION: to adopt a
+# newer agent, bump both in one deliberate PR (after the tag is cut upstream).
+AGENT_PINNED_REF = f"v{MIN_AGENT_VERSION}"
 # Below this floor the agent's own ``update`` subcommand is unreliable/absent,
 # so we skip it and go straight to a forced reinstall. Kept equal to the
 # required minimum: anything under the minimum is "too old to trust its self
@@ -311,7 +316,7 @@ def install_agent() -> bool:
     click.secho("  Installing amplifier-agent ...", fg="cyan")
     uv = _require_uv()
     ok = _run(
-        [uv, "tool", "install", "--from", f"git+{AGENT_REPO}", AGENT_PACKAGE],
+        [uv, "tool", "install", "--from", f"git+{AGENT_REPO}@{AGENT_PINNED_REF}", AGENT_PACKAGE],
         what="uv tool install amplifier-agent",
     )
     if ok:
@@ -324,11 +329,19 @@ def install_agent() -> bool:
 
 
 def force_reinstall_agent() -> bool:
-    """Force a clean reinstall of amplifier-agent to the latest version."""
-    click.secho("  Force-reinstalling amplifier-agent to latest ...", fg="cyan")
+    """Force a clean reinstall of amplifier-agent to the pinned known-good tag."""
+    click.secho(f"  Force-reinstalling amplifier-agent to {AGENT_PINNED_REF} ...", fg="cyan")
     uv = _require_uv()
     return _run(
-        [uv, "tool", "install", "--force", "--from", f"git+{AGENT_REPO}", AGENT_PACKAGE],
+        [
+            uv,
+            "tool",
+            "install",
+            "--force",
+            "--from",
+            f"git+{AGENT_REPO}@{AGENT_PINNED_REF}",
+            AGENT_PACKAGE,
+        ],
         what="uv tool install --force amplifier-agent",
     )
 
