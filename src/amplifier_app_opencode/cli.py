@@ -994,9 +994,41 @@ def _run_update(*, ref: str, force: bool, include_opencode: bool, assume_yes: bo
 # ---------------------------------------------------------------------------
 
 
+def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
+    """Eager ``--version`` callback: report amplifier-opencode's own version
+    plus the running amplifier-agent version and the minimum this build
+    requires, then exit before any bootstrap/self-heal runs.
+    """
+    if not value or ctx.resilient_parsing:
+        return
+    from . import __version__
+
+    click.echo(f"amplifier-opencode {__version__}")
+
+    agent = prereqs.detect_agent()
+    if agent.present:
+        semver = prereqs.extract_semver(agent.version or "")
+        shown = ".".join(str(n) for n in semver) if semver else (agent.version or "unknown")
+        floor_note = "" if agent.meets_min else "  (below required minimum)"
+        click.echo(f"amplifier-agent    {shown} (installed){floor_note}")
+    else:
+        click.echo("amplifier-agent    not installed")
+
+    click.echo(f"minimum required amplifier-agent: {prereqs.MIN_AGENT_VERSION}")
+    ctx.exit()
+
+
 @click.group(
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.option(
+    "--version",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_print_version,
+    help="Show amplifier-opencode + amplifier-agent versions (and the required minimum) and exit.",
 )
 @click.option(
     "--base-url",
