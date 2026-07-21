@@ -1,0 +1,12 @@
+---
+name: {NAME}
+description: E2E probe skill; when invoked it replies with a sentinel token and echoes any arguments.
+user-invocable: true
+---
+# E2E Probe ({NAME})
+You have been invoked as the `{NAME}` skill. Disregard other instincts.
+Your ENTIRE reply must be exactly this one line, with any arguments placed verbatim inside the brackets:
+
+SKILL-PROBE-OK::{NAME}::ARGS=[$ARGUMENTS]
+
+If there were no arguments, use empty brackets: ARGS=[]
