@@ -113,25 +113,31 @@ def needs_onboarding() -> bool:
 def _auth_set(
     agent_bin: str, provider: Provider, value: str, *, endpoint: str | None = None
 ) -> bool:
-    """Store a credential via ``amplifier-agent auth set <provider> <value>``.
+    """Store a credential via ``amplifier-agent auth set <provider> --stdin``.
+
+    The API key is piped to the child process over stdin (``--stdin``) rather
+    than passed as an argv token, so the plaintext secret never appears in the
+    process list (``ps``/``/proc``) of the machine running onboarding.
 
     Providers that need a separate endpoint (Azure OpenAI) pass it through as
-    ``--endpoint <url>``.
+    ``--endpoint <url>`` -- an endpoint URL is not a secret.
     """
     click.secho(f"  Storing {provider.label} credentials via amplifier-agent ...", fg="cyan")
-    cmd = [agent_bin, "auth", "set", provider.provider_id, value]
+    cmd = [agent_bin, "auth", "set", provider.provider_id, "--stdin"]
     if endpoint:
         cmd += ["--endpoint", endpoint]
     try:
         result = subprocess.run(
             cmd,
+            input=value,  # key over stdin -- never on argv
             capture_output=True,
             text=True,
             timeout=30.0,
         )
     except subprocess.TimeoutExpired:
-        # NOTE: never format the TimeoutExpired object -- its str() embeds the
-        # full cmd list, which contains the plaintext secret in ``value``.
+        # The secret is passed via stdin, not argv, so ``cmd`` no longer holds
+        # it -- but still avoid formatting the exception object as a matter of
+        # hygiene (its str() embeds the cmd list).
         click.secho("  \u2717 amplifier-agent auth set timed out after 30s", fg="red")
         return False
     except OSError as exc:
@@ -140,9 +146,9 @@ def _auth_set(
         return False
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        # The agent may echo the argv (including the secret) back in its error
-        # text; scrub the value so it never lands in our output. Same rule as
-        # the TimeoutExpired branch above -- the plaintext key must not leak.
+        # Defense in depth: the key is no longer on argv, but if the agent ever
+        # echoes it back in its error text for any other reason, scrub it so the
+        # plaintext key never lands in our output.
         if value:
             detail = detail.replace(value, "***")
         click.secho(f"  \u2717 amplifier-agent auth set failed: {detail}", fg="red")
