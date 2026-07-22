@@ -1,0 +1,15 @@
+---
+mode:
+  name: {NAME}
+  description: E2E probe mode {NAME}; when active it forces a deterministic sentinel line.
+  default_action: allow
+  tools:
+    safe: [read_file]
+---
+# E2E Probe Mode ({NAME})
+
+When this mode is active, your ENTIRE reply must begin with exactly this line, verbatim:
+
+MODE-PROBE-OK::{NAME}
+
+Then stop. Do not add anything else.

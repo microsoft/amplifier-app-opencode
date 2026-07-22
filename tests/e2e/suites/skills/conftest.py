@@ -1,23 +1,31 @@
-"""Fixtures that SEED uniquely-named probe skills into every discovery dir in the DTU.
+"""Fixtures that SEED probe skills into amplifier-agent discovery dirs in the DTU.
 
-Each probe is a self-contained inline instruction ``SKILL.md`` (rendered from
-``fixtures/probe_skill.md.tmpl``) whose directory name equals its skill name -- the
-convention opencode and amplifier-agent both use. Seeding happens BEFORE the opencode
-TUI/server launches (see ``skills_session``), so the skills exist when discovery runs.
+The bridge under test exposes amplifier-agent USER-INVOKED skills (the ones GET
+/v1/skills returns -- i.e. ``disable-model-invocation: true``) to opencode as native
+slash COMMANDS (``~/.config/opencode/command/<name>.md`` with a
+``!amplifier:skill <name> $ARGUMENTS`` body). Model-invocable skills are deliberately
+NOT bridged, so they never clutter opencode. This suite seeds:
+
+* one USER-INVOKED probe per amplifier discovery dir (project / user / env / hostcfg),
+  each ``disable-model-invocation: true`` so it surfaces in GET /v1/skills and should
+  become a ``/<name>`` command, and
+* one MODEL-INVOCABLE probe (no ``disable-model-invocation``) that must NOT be bridged --
+  the negative case that proves the visibility filter.
+
+Each probe is a self-contained inline ``SKILL.md`` (rendered from
+``fixtures/probe_skill.md.tmpl``) whose directory name equals its skill name. Seeding
+happens BEFORE the opencode TUI/server launches (see ``skills_session``), so the server
+discovers them at startup and the launcher can bridge them.
 
 The probe emits a DETERMINISTIC sentinel (``SKILL-PROBE-OK::<name>::ARGS=[...]``) and
-echoes ``$ARGUMENTS`` verbatim, so both discovery (name in the ``/skills`` popup) and
-invocation (sentinel in the reply) are verifiable via the AI judge alone -- no
-filesystem tool permissions required.
+echoes ``$ARGUMENTS`` verbatim, so invocation is verifiable via the AI judge alone.
 
-Seeded sources (name -> path in DTU):
-    e2e-amp-proj    -> {PROJECT_DIR}/.amplifier/skills/e2e-amp-proj/SKILL.md    (amplifier)
-    e2e-amp-user    -> /root/.amplifier/skills/e2e-amp-user/SKILL.md            (amplifier)
-    e2e-amp-env     -> /root/e2e-amp-env-skills/e2e-amp-env/SKILL.md         (amplifier, env dir)
-    e2e-amp-hostcfg -> /root/e2e-amp-hostcfg-skills/e2e-amp-hostcfg/SKILL.md (amplifier, hostcfg)
-    e2e-oc-global   -> /root/.config/opencode/skills/e2e-oc-global/SKILL.md     (opencode)
-    e2e-oc-project  -> {PROJECT_DIR}/.opencode/skills/e2e-oc-project/SKILL.md   (opencode)
-    e2e-claude      -> /root/.claude/skills/e2e-claude/SKILL.md                 (claude-compat)
+Seeded sources (name -> dir -> kind):
+    e2e-amp-proj    -> {PROJECT_DIR}/.amplifier/skills/   (user-invoked)
+    e2e-amp-user    -> /root/.amplifier/skills/           (user-invoked)
+    e2e-amp-env     -> /root/e2e-amp-env-skills/          (user-invoked, env dir)
+    e2e-amp-hostcfg -> /root/e2e-amp-hostcfg-skills/      (user-invoked, hostcfg)
+    e2e-amp-model   -> /root/.amplifier/skills/           (model-invocable; NEGATIVE)
 """
 
 from __future__ import annotations
@@ -83,33 +91,57 @@ if __name__ == "__main__":
     print(check_login("alice", "letmein"))
 '''
 
-# source_key -> (skill_name, dest SKILL.md path inside the DTU). Directory name == name.
-_SEED_MAP: dict[str, tuple[str, str]] = {
-    "amplifier_project": ("e2e-amp-proj", f"{PROJECT_DIR}/.amplifier/skills/e2e-amp-proj/SKILL.md"),
-    "amplifier_user": ("e2e-amp-user", f"{DTU_HOME}/.amplifier/skills/e2e-amp-user/SKILL.md"),
-    "amplifier_env": ("e2e-amp-env", f"{DTU_HOME}/e2e-amp-env-skills/e2e-amp-env/SKILL.md"),
+# source_key -> (skill_name, dest SKILL.md path, user_invoked). Directory name == name.
+# ``user_invoked`` renders ``disable-model-invocation: true`` into the frontmatter, which is
+# what makes GET /v1/skills return the skill (and thus what the launcher bridges to a
+# command). The single ``user_invoked=False`` entry is the negative case.
+_SEED_MAP: dict[str, tuple[str, str, bool]] = {
+    "amplifier_project": (
+        "e2e-amp-proj",
+        f"{PROJECT_DIR}/.amplifier/skills/e2e-amp-proj/SKILL.md",
+        True,
+    ),
+    "amplifier_user": (
+        "e2e-amp-user",
+        f"{DTU_HOME}/.amplifier/skills/e2e-amp-user/SKILL.md",
+        True,
+    ),
+    "amplifier_env": (
+        "e2e-amp-env",
+        f"{DTU_HOME}/e2e-amp-env-skills/e2e-amp-env/SKILL.md",
+        True,
+    ),
     "amplifier_hostcfg": (
         "e2e-amp-hostcfg",
         f"{DTU_HOME}/e2e-amp-hostcfg-skills/e2e-amp-hostcfg/SKILL.md",
+        True,
     ),
-    "opencode_global": (
-        "e2e-oc-global",
-        f"{DTU_HOME}/.config/opencode/skills/e2e-oc-global/SKILL.md",
+    # NEGATIVE: model-invocable (no disable-model-invocation). Seeded in the user dir so the
+    # server DISCOVERS it -- proving it is the GET /v1/skills filter, not a discovery gap,
+    # that keeps it out of opencode's command menu.
+    "amplifier_model_only": (
+        "e2e-amp-model",
+        f"{DTU_HOME}/.amplifier/skills/e2e-amp-model/SKILL.md",
+        False,
     ),
-    "opencode_project": (
-        "e2e-oc-project",
-        f"{PROJECT_DIR}/.opencode/skills/e2e-oc-project/SKILL.md",
-    ),
-    "claude_compat": ("e2e-claude", f"{DTU_HOME}/.claude/skills/e2e-claude/SKILL.md"),
 }
 
 
-def _render(name: str) -> str:
-    """Render the probe template for ``name`` (substitute the ``{NAME}`` placeholder)."""
-    return _TEMPLATE_PATH.read_text(encoding="utf-8").replace("{NAME}", name)
+def _render(name: str, *, user_invoked: bool) -> str:
+    """Render the probe template for ``name``.
+
+    Substitutes ``{EXTRA_FRONTMATTER}`` (the ``disable-model-invocation`` line for
+    user-invoked probes, empty otherwise) and then ``{NAME}``.
+    """
+    extra = "disable-model-invocation: true\n" if user_invoked else ""
+    return (
+        _TEMPLATE_PATH.read_text(encoding="utf-8")
+        .replace("{EXTRA_FRONTMATTER}", extra)
+        .replace("{NAME}", name)
+    )
 
 
-def _seed_skill(dtu_id: str, name: str, dest: str) -> None:
+def _seed_skill(dtu_id: str, name: str, dest: str, *, user_invoked: bool) -> None:
     """Write a rendered probe ``SKILL.md`` at ``dest`` inside the DTU.
 
     Creates the parent dir first (belt-and-suspenders next to ``file_push``'s own
@@ -120,37 +152,39 @@ def _seed_skill(dtu_id: str, name: str, dest: str) -> None:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".md", prefix="probe-skill-", delete=False, encoding="utf-8"
     ) as handle:
-        handle.write(_render(name))
+        handle.write(_render(name, user_invoked=user_invoked))
         local_path = handle.name
     dtu.file_push(dtu_id, local_path, dest)
 
 
 @pytest.fixture
 def seeded_skill_dirs(dtu_id: str) -> dict[str, str]:
-    """Seed a probe skill into EVERY discovery dir; return ``{source_key: skill_name}``.
+    """Seed each probe skill; return ``{source_key: skill_name}``.
 
     Runs before the TUI launches (ordered ahead of ``opencode_session`` in
-    ``skills_session``) so discovery sees the freshly-seeded skills.
+    ``skills_session``) so the server discovers the freshly-seeded skills and the launcher
+    can bridge the user-invoked ones into opencode commands.
     """
     seeded: dict[str, str] = {}
-    for source_key, (name, dest) in _SEED_MAP.items():
-        _seed_skill(dtu_id, name, dest)
+    for source_key, (name, dest, user_invoked) in _SEED_MAP.items():
+        _seed_skill(dtu_id, name, dest, user_invoked=user_invoked)
         seeded[source_key] = name
 
-    # LIMITATION (amplifier_env): the probe dir is seeded, but $AMPLIFIER_SKILLS_DIR must
-    # point the amplifier-agent server at /root/e2e-amp-env-skills for this skill to be
-    # discovered. The server is launched by the root ``opencode_session`` fixture, which we
-    # must NOT modify -- so the env var is not exported into it here. The implementation must
-    # wire AMPLIFIER_SKILLS_DIR=/root/e2e-amp-env-skills into the launched server's
-    # environment. Until then, ``discover-amplifier-env`` / ``invoke-*`` for e2e-amp-env fail.
+    # LIMITATION (amplifier_env): the probe dir is seeded, but AMPLIFIER_SKILLS_DIR must
+    # point the amplifier-agent SERVER at /root/e2e-amp-env-skills for this skill to be
+    # discovered (and thus returned by GET /v1/skills and bridged to a command). The server
+    # is launched by the root ``opencode_session`` fixture, which we must NOT modify -- so
+    # the env var is not exported into it here. The launcher implementation must wire
+    # AMPLIFIER_SKILLS_DIR=/root/e2e-amp-env-skills into the launched server's environment.
+    # Until then, ``discover-amplifier-env`` and its invocation stay red.
 
     # LIMITATION (amplifier_hostcfg): the probe dir is seeded, but the amplifier-agent
-    # host-config's ``skills.skills`` list must include /root/e2e-amp-hostcfg-skills for this
-    # skill to be discovered. We write a host-config JSON artifact next to the dir as a
+    # host-config's ``skills.skills`` list must include /root/e2e-amp-hostcfg-skills for the
+    # server to discover it. We write a host-config JSON artifact next to the dir as a
     # convenience for the implementer, but we do NOT know (and must not guess) the exact
     # host-config path the launched server reads, and we cannot point the un-modifiable
-    # ``opencode_session`` fixture at it. The implementation must place/point the launched
-    # server's host-config so ``skills.skills`` contains /root/e2e-amp-hostcfg-skills.
+    # ``opencode_session`` fixture at it. The launcher must place/point the launched server's
+    # host-config so ``skills.skills`` contains /root/e2e-amp-hostcfg-skills.
     hostcfg_artifact = f"{DTU_HOME}/e2e-amp-hostcfg-skills/host-config.json"
     hostcfg_json = '{"skills": {"skills": ["/root/e2e-amp-hostcfg-skills"]}}'
     dtu.exec_json(
@@ -175,10 +209,10 @@ def _seed_file(dtu_id: str, content: str, dest: str) -> None:
 def seeded_review_workspace(dtu_id: str) -> str:
     """Make PROJECT_DIR a git repo with an UNCOMMITTED reviewable change; return its path.
 
-    Gives the shipped ``code-review`` skill (Group B's ``invoke-bundled-skill``) something
-    real to review: it starts with ``git diff`` (see the skill's SKILL.md Phase 1). We
-    commit a clean baseline ``app.py``, then overwrite it with a version containing an
-    obvious hardcoded-backdoor defect and leave that change UNCOMMITTED, so ``git diff``
+    Gives the shipped ``code-review`` skill (Group B's ``invoke-command-code-review-fork``)
+    something real to review: it starts with ``git diff`` (see the skill's SKILL.md Phase
+    1). We commit a clean baseline ``app.py``, then overwrite it with a version containing
+    an obvious hardcoded-backdoor defect and leave that change UNCOMMITTED, so ``git diff``
     surfaces exactly the seeded defect as the change under review. Mirrors amplifier-agent's
     own code-review eval (skill-invoke-and-behave) which seeds the same backdoor defect.
 

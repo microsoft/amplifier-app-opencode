@@ -1,13 +1,21 @@
-"""Skills suite: user-invocable skills surfaced through the opencode ``/skills`` menu.
+"""Skills suite: amplifier-agent user-invoked skills surfaced as opencode "/" commands.
 
-Covers discovery (a seeded probe skill appears in the native ``/skills`` popup) and
-invocation (typing ``/<name>`` runs the skill and passes trailing text as arguments)
-across EVERY discovery directory -- opencode-native AND amplifier-agent-specific.
+The launcher bridges amplifier-agent's user-invoked skills (the ``disable-model-invocation``
+set returned by ``GET /v1/skills`` -- ``code-review``, ``council``, plus any the user drops
+in an amplifier skill dir) into opencode as native slash commands
+(``~/.config/opencode/command/<name>.md``). Running ``/<name>`` sends a
+``!amplifier:skill <name> $ARGUMENTS`` body, which amplifier-agent dispatches SERVER-SIDE to
+its own ``load_skill`` tool (the real fork for ``code-review`` / ``council``).
 
-These are intentionally-FAILING (TDD) tests: the launcher does not yet bridge
-amplifier-agent skill dirs into opencode's native ``/skills`` menu, so the
-amplifier-dir cases go red until that feature is built. The opencode-native and
-built-in cases serve as the "don't regress" baseline.
+Covers discovery (a user-invoked skill appears as a ``/<name>`` command, one case per
+amplifier discovery dir), a negative case (a model-invocable skill must NOT appear as a
+command), and invocation (running the command runs the skill and passes trailing text as
+arguments).
+
+These are intentionally-FAILING (TDD) tests: the launcher does not yet bridge amplifier-agent
+user-invoked skills into opencode commands, so the amplifier cases go red until that feature
+is built. The env and hostcfg cases additionally require the launched server to be pointed at
+those dirs (see the LIMITATION notes in ``conftest.py``).
 """
 
 from __future__ import annotations

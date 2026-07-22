@@ -29,7 +29,8 @@ PROVISIONING = Path(__file__).resolve().parent / "provisioning"
 PROFILE_SRC = PROVISIONING / "profile.yaml"
 
 DTU_NAME = "oc-e2e"
-BASE_IMAGE = "ubuntu:24.04"
+# Base image for the DTU container; override with the OC_E2E_BASE_IMAGE env var.
+BASE_IMAGE = os.environ.get("OC_E2E_BASE_IMAGE", "ubuntu:24.04")
 
 # Local working trees to mirror. The Gitea repo name (key) must match the last segment
 # of the GitHub URL the profile rewrites. amplifier-app-opencode is this repo (REPO_ROOT);
