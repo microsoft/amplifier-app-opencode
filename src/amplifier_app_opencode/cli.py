@@ -226,12 +226,18 @@ def start_amplifier_agent(
     host_config: Path | None,
     api_key: str,
     binary: str | None,
+    cwd: Path | None = None,
 ) -> subprocess.Popen[bytes]:
     """Spawn ``amplifier-agent serve chat-completions`` in the background.
 
     Output is appended to /tmp/amplifier-agent.log. Liveness of an
     already-running instance is detected via an HTTP probe
     (``server_is_running``), not a PID file.
+
+    ``cwd`` sets the server's working directory. It must be the launch/project
+    dir so amplifier-agent's project-relative ``.amplifier/skills/`` discovery
+    finds skills seeded under the project (otherwise the server inherits our
+    CWD and silently misses project-scoped skills).
     """
     binary = binary or shutil.which("amplifier-agent")
     if not binary:
@@ -262,6 +268,7 @@ def start_amplifier_agent(
         stderr=log_fh,
         stdin=subprocess.DEVNULL,
         start_new_session=True,  # so amplifier-agent survives our exec
+        cwd=str(cwd) if cwd is not None else None,
     )
     return proc
 
@@ -491,6 +498,163 @@ def write_opencode_config(
 
 
 # ---------------------------------------------------------------------------
+# Skills bridge: /v1/skills -> opencode /command files
+# ---------------------------------------------------------------------------
+
+# Sidecar manifest that records which command files THIS launcher generated.
+# opencode's command frontmatter schema is closed and rejects unknown keys, so
+# ownership can't live in the file itself -- we track it out-of-band. The
+# manifest lives next to the command dir (in its parent scope dir).
+GENERATED_COMMANDS_MANIFEST = ".amplifier-generated-commands.json"
+
+
+def fetch_skills(base_url: str, api_key: str) -> list[dict[str, Any]]:
+    """Return user-invocable skills from amplifier-agent's /v1/skills.
+
+    Mirrors :func:`fetch_models` (bearer auth + ``data`` extraction) but is
+    strictly best-effort: on ANY error (network failure, non-200, malformed
+    JSON, missing/oddly-shaped ``data``) it returns an empty list and never
+    raises. Skills are an optional enhancement; they must never block launch.
+    """
+    try:
+        r = httpx.get(
+            f"{base_url.rstrip('/')}/skills",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15.0,
+        )
+        r.raise_for_status()
+        body = r.json()
+    except Exception:
+        return []
+    if not isinstance(body, dict):
+        return []
+    data = body.get("data", [])
+    if not isinstance(data, list):
+        return []
+    # Keep only well-formed rows that at least carry a usable name.
+    return [s for s in data if isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"]]
+
+
+def resolve_command_dir(project_dir: Path | None) -> Path:
+    """Return the opencode command dir for the same scope as the provider config.
+
+    Matches how ``_run_launch`` chooses the provider-config path:
+      * ``project_dir`` given -> ``<project>/.opencode/command/``
+      * otherwise             -> ``~/.config/opencode/command/``
+    """
+    if project_dir is None:
+        return GLOBAL_OPENCODE_DIR / "command"
+    return project_dir / ".opencode" / "command"
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    Same idiom as :func:`write_opencode_config`: render to a sibling temp file,
+    then ``os.replace`` into place so a crash mid-write leaves any existing file
+    intact rather than truncated.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(text)
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _read_generated_manifest(manifest_path: Path) -> list[str]:
+    """Return the list of command filenames a previous run generated.
+
+    Best-effort: a missing or corrupt manifest yields an empty list (we simply
+    treat every existing file as unowned and never clobber it).
+    """
+    if not manifest_path.exists():
+        return []
+    try:
+        loaded = json.loads(manifest_path.read_text(encoding="utf-8") or "{}")
+    except (json.JSONDecodeError, OSError):
+        return []
+    commands = loaded.get("commands", []) if isinstance(loaded, dict) else loaded
+    if not isinstance(commands, list):
+        return []
+    return [c for c in commands if isinstance(c, str)]
+
+
+def _write_generated_manifest(manifest_path: Path, commands: list[str]) -> None:
+    """Persist the ownership manifest atomically."""
+    payload = json.dumps({"commands": sorted(commands)}, indent=2) + "\n"
+    _atomic_write_text(manifest_path, payload)
+
+
+def write_command_files(skills: list[dict[str, Any]], command_dir: Path) -> None:
+    """Materialise one opencode ``/command`` file per skill, with reconciliation.
+
+    Each skill ``{name, description}`` becomes ``{command_dir}/{name}.md``::
+
+        ---
+        description: "<skill description>"
+        ---
+        !amplifier:skill <name> $ARGUMENTS
+
+    The description is serialised with ``json.dumps`` -- a JSON string is also a
+    valid YAML double-quoted scalar, so colons, quotes and newlines cannot break
+    the frontmatter. The body line is emitted verbatim (opencode only treats a
+    leading ``!`` specially when immediately followed by a backtick).
+
+    Ownership is tracked in a sidecar manifest at
+    ``{command_dir.parent}/.amplifier-generated-commands.json``. On each run we:
+      * (re)write a file for every current skill and record it in the new manifest,
+      * delete files listed in the OLD manifest whose skill no longer exists,
+      * skip -- with a warning -- any target that already exists but is NOT in the
+        old manifest (a user's own command is never overwritten).
+    """
+    command_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = command_dir.parent / GENERATED_COMMANDS_MANIFEST
+    old_owned = set(_read_generated_manifest(manifest_path))
+
+    new_owned: list[str] = []
+    for skill in skills:
+        name = skill.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        filename = f"{name}.md"
+        target = command_dir / filename
+
+        # Never overwrite a user's own command file: it exists but we didn't
+        # generate it (not in the previous run's manifest).
+        if target.exists() and filename not in old_owned:
+            click.secho(
+                f"      skills: skipping {target.name} -- exists and was not "
+                "generated by amplifier-opencode (leaving your command untouched)",
+                fg="yellow",
+            )
+            continue
+
+        description = skill.get("description", "")
+        if not isinstance(description, str):
+            description = str(description)
+        content = (
+            "---\n"
+            f"description: {json.dumps(description)}\n"
+            "---\n"
+            f"!amplifier:skill {name} $ARGUMENTS\n"
+        )
+        _atomic_write_text(target, content)
+        new_owned.append(filename)
+
+    # Prune generated files that are no longer backed by a skill.
+    for stale in old_owned - set(new_owned):
+        with contextlib.suppress(FileNotFoundError):
+            (command_dir / stale).unlink()
+
+    _write_generated_manifest(manifest_path, new_owned)
+
+
+# ---------------------------------------------------------------------------
 # opencode launch
 # ---------------------------------------------------------------------------
 
@@ -616,6 +780,7 @@ def _run_launch(
             host_config=host_config,
             api_key=api_key,
             binary=str(amplifier_agent_bin) if amplifier_agent_bin else None,
+            cwd=launch_dir,
         )
         if not wait_for_server_ready(base_url, api_key):
             raise click.ClickException(
@@ -662,6 +827,25 @@ def _run_launch(
     config_path = write_opencode_config(config_path, provider_block, provider_id=provider_id)
     scope = "global" if project_dir is None else "project"
     click.secho(f"[3/4] Wrote {config_path}  ({scope} config)", fg="green")
+
+    # Step 3b: bridge user-invocable skills into opencode /commands ----------
+    # Best-effort: fetch /v1/skills and materialise a command file per skill in
+    # the same scope as the provider config. Any failure is logged and must
+    # NEVER block the launch/exec path.
+    try:
+        command_dir = resolve_command_dir(project_dir)
+        skills = fetch_skills(base_url, api_key)
+        write_command_files(skills, command_dir)
+        if skills:
+            click.secho(
+                f"      Bridged {len(skills)} skill command(s) into {command_dir}",
+                fg="green",
+            )
+    except Exception as exc:  # skills are optional, never fatal
+        click.secho(
+            f"      WARNING: skills bridge failed ({exc}); continuing without commands.",
+            fg="yellow",
+        )
 
     # Step 4: exec opencode --------------------------------------------------
     if no_launch:

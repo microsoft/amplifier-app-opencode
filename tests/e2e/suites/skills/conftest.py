@@ -32,18 +32,31 @@ from __future__ import annotations
 
 import shlex
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
 
-# PROJECT_DIR is the in-DTU project dir the TUI launches from (``/root/oc-e2e``). It is
-# defined in the e2e root conftest, which sits on sys.path (inserted there by that same
-# conftest), so it imports cleanly here.
-from conftest import PROJECT_DIR
+# PROJECT_DIR / TMUX_SESSION are the in-DTU project dir and tmux session name the TUI
+# launches under (``/root/oc-e2e`` / ``oc-e2e``). They are defined in the e2e root
+# conftest, which sits on sys.path (inserted there by that same conftest), so they import
+# cleanly here.
+from conftest import PROJECT_DIR, TMUX_SESSION
 from framework import dtu
+from framework.driver import TmuxTuiDriver
 
 # The DTU installs the stack under the root user; ``$HOME`` is ``/root`` there.
 DTU_HOME = "/root"
+
+# amplifier-agent skill discovery is fixed at server STARTUP. To surface the ``env`` and
+# ``hostcfg`` probe skills, the launched amplifier-opencode process (which spawns the
+# amplifier-agent server and inherits its env into it) must start with:
+#   * AMPLIFIER_SKILLS_DIR pointing at the env probe dir, and
+#   * --host-config pointing at a host-config whose ``skills.skills`` lists the hostcfg dir.
+# The skills suite is marked ``fresh_dtu`` so a clean DTU (no pre-existing server) is
+# provisioned, guaranteeing this launch starts the server that reads these overrides.
+_ENV_SKILLS_DIR = f"{DTU_HOME}/e2e-amp-env-skills"
+_HOST_CONFIG_PATH = f"{DTU_HOME}/e2e-amp-hostcfg-skills/host-config.json"
 
 _TEMPLATE_PATH = Path(__file__).parent / "fixtures" / "probe_skill.md.tmpl"
 
@@ -241,13 +254,52 @@ def seeded_review_workspace(dtu_id: str) -> str:
 
 
 @pytest.fixture
-def skills_session(seeded_skill_dirs, seeded_review_workspace, opencode_session):
-    """The live TUI driver, with all probe skills + the review workspace seeded pre-launch.
+def skills_session(
+    seeded_skill_dirs: dict[str, str],
+    seeded_review_workspace: str,
+    dtu_id: str,
+) -> Generator[TmuxTuiDriver, None, None]:
+    """The live TUI driver, launched so the amplifier-agent server sees the override dirs.
 
-    Fixture params are ordered deliberately: pytest sets up same-scope independent
-    fixtures in listed order, so ``seeded_skill_dirs`` (writing SKILL.md files) and
+    Mirrors the root ``opencode_session`` body but launches its OWN driver with the two
+    startup overrides the ``env`` and ``hostcfg`` probe skills need (the shared
+    ``opencode_session`` is left untouched for the chat suite):
+
+    * ``AMPLIFIER_SKILLS_DIR`` is exported onto the launch process as a leading
+      ``VAR=value`` prefix on the command string. ``driver.spawn`` passes that whole
+      string as ``tmux new-session``'s single ``[shell-command]`` argument, which tmux
+      runs via ``/bin/sh -c`` -- so the prefix is honored as an env assignment for the
+      command (the same reason the space-separated ``amplifier-opencode launch ...`` in
+      ``opencode_session`` works at all). amplifier-opencode then inherits that env into
+      the amplifier-agent server it spawns.
+    * ``--host-config`` is appended as a launcher flag pointing at the host-config JSON
+      written by ``seeded_skill_dirs`` (whose ``skills.skills`` lists the hostcfg dir);
+      amplifier-opencode forwards it to the server.
+
+    Fixture params are ordered deliberately: pytest sets up same-scope independent fixtures
+    in listed order, so ``seeded_skill_dirs`` (writing SKILL.md files + the host-config) and
     ``seeded_review_workspace`` (git repo + uncommitted reviewable change) both run BEFORE
-    ``opencode_session`` spawns the opencode TUI/server. That ordering guarantees the
-    skills exist for discovery on startup and the code-review skill has a diff to review.
+    this launches the opencode TUI/server. That ordering guarantees the skills exist for
+    discovery on startup and the code-review skill has a diff to review. The suite is marked
+    ``fresh_dtu`` so ``dtu_id`` points at a clean DTU with no pre-existing server, ensuring
+    this launch starts the server that reads the overrides.
     """
-    return opencode_session
+    # Rebind through f-strings so their static type is a plain str: the dynamic
+    # ``from conftest import`` confuses the type checker into treating the names as the
+    # conftest module (same reason ``seeded_review_workspace`` rebinds PROJECT_DIR).
+    tmux_session = f"{TMUX_SESSION}"
+    project_dir = f"{PROJECT_DIR}"
+    exec_prefix = ["amplifier-digital-twin", "exec", dtu_id, "--"]
+    driver = TmuxTuiDriver(tmux_session, exec_prefix=exec_prefix)
+    driver.run_command(["bash", "-lc", f"mkdir -p {project_dir}"])
+    command = (
+        f"AMPLIFIER_SKILLS_DIR={_ENV_SKILLS_DIR} "
+        f"amplifier-opencode launch --project-dir {PROJECT_DIR} "
+        f"--host-config {_HOST_CONFIG_PATH}"
+    )
+    driver.spawn(command)
+    try:
+        driver.wait_for_text("tab agents", timeout=120)
+        yield driver
+    finally:
+        driver.close()

@@ -44,6 +44,16 @@ export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
 EOF
 export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
 
+# Disable opencode's self-update check. Pinned to ${OPENCODE_VERSION}, a newer release
+# exists, so opencode otherwise pops an "Update Available" dialog over the TUI on launch --
+# which obscures the command menu and derails the screen-driven tests. `autoupdate: false`
+# is a global/user config preference, so it lives in the global config and is merged under
+# the launcher's project-scoped provider block.
+mkdir -p "$HOME/.config/opencode"
+cat >"$HOME/.config/opencode/opencode.json" <<'EOF'
+{ "$schema": "https://opencode.ai/config.json", "autoupdate": false }
+EOF
+
 echo "[install] versions:"
 opencode --version || true
 amplifier-agent --version || true

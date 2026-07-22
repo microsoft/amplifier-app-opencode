@@ -32,29 +32,30 @@ LIMITATION notes in ``conftest.py``).
 
 from __future__ import annotations
 
-from framework.harness import Step, TUICase, send_and_settle, setup_select_sonnet5
+import re
+
+from framework.harness import Step, TUICase, setup_select_sonnet5
 
 
 def _command_discovery_case(case_name: str, skill_name: str) -> TUICase:
     """Open the "/" command menu filtered to ``skill_name``; assert it is listed.
 
-    No model selection: discovery never sends a turn, so these stay fast (the
-    ``opencode_session`` fixture already gates on the main screen being ready). Typing
-    ``/<name>`` opens opencode's command palette filtered to that command. ``wait`` is an
-    early, cheap gate that the screen rendered; the ``judge`` step is the authoritative
-    pass/fail on whether ``/<name>`` is a real command in the menu (not just input echo).
+    No model selection: discovery never sends a turn, so these stay fast. Typing
+    ``/<name>`` opens opencode's command autocomplete, which renders the matching command
+    as a menu ENTRY of the form ``/<name>   <description>``. That description column is
+    what distinguishes a real menu entry from the bare ``/<name>`` echoed in the input
+    box, so we gate deterministically on it: the command name followed by two-or-more
+    spaces and a word character (the start of the description). This is a stronger,
+    non-flaky assertion than asking an AI judge to eyeball "menu entry vs input text"
+    (which misfired on this near-identical layout), and it naturally waits for the popup
+    to finish rendering.
     """
+    menu_entry = rf"/{re.escape(skill_name)}\s\s+\w"
     return TUICase(
         case_name,
         [
             Step("send_text", f"/{skill_name}"),
-            Step("wait", skill_name),
-            Step(
-                "judge",
-                f"Is '/{skill_name}' shown as an available COMMAND in opencode's command "
-                f"menu/list on screen (a selectable command entry, not merely the text "
-                f"typed into the input box)?",
-            ),
+            Step("wait", menu_entry, timeout=30.0, regex=True),
             Step("send_keys", "Escape"),
         ],
     )
@@ -64,22 +65,17 @@ def _command_absent_case(case_name: str, skill_name: str) -> TUICase:
     """Assert ``skill_name`` is NOT offered as a command (the negative / visibility case).
 
     A model-invocable skill is discovered by the server but filtered out of
-    ``GET /v1/skills``, so the launcher never writes a command file for it. Typing
-    ``/<name>`` should therefore match no command (opencode shows "No matching items").
-    The judge passes ONLY if the command is absent.
+    ``GET /v1/skills``, so the launcher never writes a command file for it. Typing the full
+    ``/<name>`` therefore matches no command and opencode's autocomplete renders the
+    literal ``No matching items`` placeholder. Waiting for that placeholder is a
+    deterministic proof of absence (the command name still echoes in the input box, but no
+    menu entry with a description is offered), replacing a flaky AI-judge read.
     """
     return TUICase(
         case_name,
         [
             Step("send_text", f"/{skill_name}"),
-            Step(
-                "judge",
-                f"Confirm there is NO available command named '/{skill_name}' in opencode's "
-                f"command menu -- the menu shows no matching command (e.g. 'No matching "
-                f"items') or the command is simply absent. The same text appearing only in "
-                f"the input box does NOT count as a command. Answer PASS only if no such "
-                f"command is offered.",
-            ),
+            Step("wait", "No matching items", timeout=30.0),
             Step("send_keys", "Escape"),
         ],
     )
@@ -88,18 +84,25 @@ def _command_absent_case(case_name: str, skill_name: str) -> TUICase:
 def invoke_command(command_line: str, settle_timeout: float = 90.0) -> list[Step]:
     """Steps to RUN an opencode slash command and wait for the reply to settle.
 
-    A generated command file makes ``/<name>`` a real command, so typing it and pressing
-    Enter runs it: opencode expands the command body (``!amplifier:skill <name>
-    $ARGUMENTS``) and sends it as the turn message, which amplifier-agent routes
-    server-side to ``load_skill``. Reuses the busy-indicator settle logic in
-    ``send_and_settle`` (type text, Enter, wait for generation to start then finish).
+    A generated command file makes ``/<name>`` a real command. Typing ``/<name>`` opens
+    opencode's command autocomplete popup with the command highlighted, and a single
+    Enter there ACCEPTS the completion (leaving the text in the input) rather than
+    submitting the turn -- so a bare ``/<name>`` never actually runs. We therefore press
+    Enter twice: the first accepts/closes the popup, the second submits the now-plain
+    input (via ``submit_message``, which does NOT retype -- retyping would re-open the
+    popup and re-swallow the Enter). On submit, opencode expands the command body
+    (``!amplifier:skill <name> $ARGUMENTS``) and sends it as the turn message, which
+    amplifier-agent routes server-side to ``load_skill``.
 
-    NOTE (tune on first DTU run): if opencode's command palette intercepts Enter to SELECT
-    the highlighted command instead of running it, this may need an extra key (select, then
-    send). This mirrors the trailing-space nuance the earlier /skills flow required. Keep
-    the interaction fix here so the cases stay declarative.
+    (Confirmed on a DTU run: a bare ``/<name>`` + single Enter left the command unsent in
+    the input box. Escape does NOT work -- it clears the typed input. Commands WITH
+    trailing args already submitted because the trailing text closes the popup.)
     """
-    return send_and_settle(command_line, settle_timeout=settle_timeout)
+    return [
+        Step("send_text", command_line),
+        Step("send_keys", "Enter"),
+        Step("submit_message", "", timeout=settle_timeout),
+    ]
 
 
 # --------------------------------------------------------------------------- #

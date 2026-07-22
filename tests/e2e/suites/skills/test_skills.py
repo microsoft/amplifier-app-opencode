@@ -13,7 +13,11 @@ from framework.harness import TUICase, run_case
 from framework.judge import AIUserJudge
 from suites.skills.cases import SKILLS_CASES
 
-pytestmark = pytest.mark.dtu
+# ``fresh_dtu`` forces one clean DTU provision for the session (see the root conftest
+# ``_fresh_dtu`` gate): amplifier-agent's skill discovery is fixed at server STARTUP, so the
+# skills suite needs a server with no prior state that ``skills_session`` starts with its
+# AMPLIFIER_SKILLS_DIR / --host-config overrides. Composes with ``dtu`` as a marker list.
+pytestmark = [pytest.mark.dtu, pytest.mark.fresh_dtu]
 
 
 @pytest.mark.parametrize("case", SKILLS_CASES, ids=[c.name for c in SKILLS_CASES])

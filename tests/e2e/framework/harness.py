@@ -19,7 +19,14 @@ from .driver import TmuxTuiDriver
 from .judge import AIUserJudge
 
 StepKind = Literal[
-    "send_keys", "send_text", "send_message", "wait", "judge", "assert_log", "assert_events"
+    "send_keys",
+    "send_text",
+    "send_message",
+    "submit_message",
+    "wait",
+    "judge",
+    "assert_log",
+    "assert_events",
 ]
 
 # Busy indicator: opencode shows the ``esc interrupt`` hint in the footer WHILE the model
@@ -72,6 +79,8 @@ def run_case(case: TUICase, driver: TmuxTuiDriver, judge: AIUserJudge) -> None:
             driver.send_text(step.value)
         elif step.kind == "send_message":
             _send_message(driver, step.value, settle_timeout=step.timeout)
+        elif step.kind == "submit_message":
+            _submit_message(driver, settle_timeout=step.timeout)
         elif step.kind == "judge":
             screen = driver.capture()
             verdict = judge.evaluate(screen, step.value)
@@ -124,8 +133,19 @@ def send_and_settle(text: str, settle_timeout: float = 90.0) -> list[Step]:
 
 
 def _send_message(driver: TmuxTuiDriver, text: str, settle_timeout: float) -> None:
-    """Submit ``text`` and block until the reply settles (busy indicator clears)."""
+    """Type ``text`` then submit and block until the reply settles."""
     driver.send_text(text)
+    _submit_message(driver, settle_timeout=settle_timeout)
+
+
+def _submit_message(driver: TmuxTuiDriver, settle_timeout: float) -> None:
+    """Press Enter to submit the current input and block until the reply settles.
+
+    Split out from ``_send_message`` so a caller that has already typed (and, for a
+    slash command, dismissed opencode's autocomplete popup with Escape) can submit the
+    existing input WITHOUT retyping -- retyping would re-open the popup and re-swallow
+    the Enter.
+    """
     driver.send_keys("Enter")
     # Generation kicks off: the interrupt hint streams in. A very fast turn could finish
     # before we sample it, so treat "never appeared" as "already done" and fall through.
