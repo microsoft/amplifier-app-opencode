@@ -14,12 +14,8 @@ Behavior is verified
 by selecting the mode-agent and judging the visible reply -- never by grepping logs or
 inspecting generated files, so a test breaks only if user-visible behavior breaks.
 
-These are intentionally-FAILING (TDD) tests. Today the launcher only writes a
-provider/models block into ``opencode.json``; it does not read ``/v1/modes`` and generates
-no ``<mode> (Amplifier)`` agents, so every case below goes red. Group A (discovery) fails
-purely at the opencode-launcher layer. Group B (behavior) additionally depends on
-amplifier-agent interpreting the per-turn mode selection, which is unbuilt, so those stay
-red longer. The point of these tests is to specify exactly what "done" looks like.
+Group A (discovery) exercises the opencode-launcher layer alone. Group B (behavior)
+additionally depends on amplifier-agent honoring the per-turn mode selection.
 """
 
 from __future__ import annotations

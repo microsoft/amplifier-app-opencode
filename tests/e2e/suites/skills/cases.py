@@ -25,9 +25,8 @@ emit a deterministic sentinel (``SKILL-PROBE-OK::<name>::ARGS=...``) so a case p
 if the skill genuinely ran; the shipped ``code-review`` case exercises the real fork on a
 seeded uncommitted defect.
 
-Every amplifier case is EXPECTED to fail until the launcher bridge exists. The env and
-hostcfg cases additionally need the launched server pointed at those dirs (see the
-LIMITATION notes in ``conftest.py``).
+The env and hostcfg cases need the launched server pointed at those discovery dirs, which
+the suite's ``skills_session`` fixture arranges.
 """
 
 from __future__ import annotations

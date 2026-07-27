@@ -183,21 +183,16 @@ def seeded_skill_dirs(dtu_id: str) -> dict[str, str]:
         _seed_skill(dtu_id, name, dest, user_invoked=user_invoked)
         seeded[source_key] = name
 
-    # LIMITATION (amplifier_env): the probe dir is seeded, but AMPLIFIER_SKILLS_DIR must
-    # point the amplifier-agent SERVER at /root/e2e-amp-env-skills for this skill to be
-    # discovered (and thus returned by GET /v1/skills and bridged to a command). The server
-    # is launched by the root ``opencode_session`` fixture, which we must NOT modify -- so
-    # the env var is not exported into it here. The launcher implementation must wire
-    # AMPLIFIER_SKILLS_DIR=/root/e2e-amp-env-skills into the launched server's environment.
-    # Until then, ``discover-amplifier-env`` and its invocation stay red.
+    # Seeding the env probe dir is not enough on its own: the amplifier-agent SERVER only
+    # discovers it (and so only returns it from GET /v1/skills for the bridge to turn into
+    # a command) if it starts with AMPLIFIER_SKILLS_DIR pointing there. This fixture does
+    # not export that -- ``skills_session`` sets it on the launch command line, and
+    # amplifier-opencode inherits it into the server it spawns.
 
-    # LIMITATION (amplifier_hostcfg): the probe dir is seeded, but the amplifier-agent
-    # host-config's ``skills.skills`` list must include /root/e2e-amp-hostcfg-skills for the
-    # server to discover it. We write a host-config JSON artifact next to the dir as a
-    # convenience for the implementer, but we do NOT know (and must not guess) the exact
-    # host-config path the launched server reads, and we cannot point the un-modifiable
-    # ``opencode_session`` fixture at it. The launcher must place/point the launched server's
-    # host-config so ``skills.skills`` contains /root/e2e-amp-hostcfg-skills.
+    # Same shape for the hostcfg probe dir: the server discovers it only when the
+    # host-config it reads lists the dir under ``skills.skills``. That host-config is
+    # written here; ``skills_session`` points the launcher at it with ``--host-config``,
+    # which the launcher forwards to ``amplifier-agent serve`` as ``--config``.
     hostcfg_artifact = f"{DTU_HOME}/e2e-amp-hostcfg-skills/host-config.json"
     hostcfg_json = '{"skills": {"skills": ["/root/e2e-amp-hostcfg-skills"]}}'
     dtu.exec_json(

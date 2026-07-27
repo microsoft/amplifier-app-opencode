@@ -6,7 +6,7 @@ and read the rendered screen with ``capture-pane -p``. The same driver works loc
 (``exec_prefix=["amplifier-digital-twin","exec","<id>","--"]`` -> commands run as
 ``amplifier-digital-twin exec <id> -- tmux ...``). No PTY flag is needed either way.
 
-Proven driving rules baked in (from hands-on spikes):
+Proven driving rules baked in:
   * Fixed size ``-x 120 -y 40``; set ``remain-on-exit on`` right after ``new-session``
     so a crashed/exited app leaves a readable final screen instead of vanishing.
   * Pass each tmux token as a separate argv element -- never wrap in ``bash -c``.

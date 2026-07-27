@@ -1,12 +1,9 @@
 """First-run credential onboarding.
 
-If amplifier-agent has no resolvable provider credentials, launching
-amplifier-opencode used to produce an empty model picker plus a ``doctor``
-error telling the user to go run ``amplifier-agent auth set`` themselves.
-
-Per the product lens -- *never make the user leave the tool* -- this module
-walks the user through choosing a provider and storing a key, calling
-``amplifier-agent auth set`` on their behalf, then re-verifying.
+When amplifier-agent has no resolvable provider credentials, this module walks
+the user through choosing a provider and storing a key, calling
+``amplifier-agent auth set`` on their behalf, then re-verifying -- so the user
+never has to leave amplifier-opencode to finish setup.
 
 Non-interactive shells (CI, pipes) get concise printed guidance and a clean
 exit instead of a hang.

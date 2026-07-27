@@ -35,9 +35,18 @@ tests/e2e/
       install-opencode-stack.sh
   suites/                       # the tests (grows per feature)
     <name>/
-      cases.py                  # TUICase data
+      cases.py                  # TUICase data (TUI suites)
       test_<name>.py            # thin pytest wrapper parametrizing the cases
+      conftest.py                # fixtures (non-TUI suites; also used by TUI suites that seed content)
+      fixtures/*.md.tmpl         # seed skill/mode file templates
 ```
+
+Suites today: `chat`, `modes`, `shadowing`, `skills`, `traversal`. `chat`, `modes`, and
+`skills` follow the `cases.py` + `test_<name>.py` TUI shape above. `shadowing` and
+`traversal` are non-TUI: there's nothing to read off a screen, so their `conftest.py`
+seeds files from `fixtures/*.md.tmpl`, drives `amplifier-opencode prepare` via
+`driver.run_command`, and the tests assert on its stdout and the resulting filesystem
+state.
 
 Framework code is the reusable half; `suites/` is where features add tests. To test a
 new area, add a `suites/<name>/` package. Nothing in `framework/` needs to change.
@@ -61,8 +70,9 @@ Transitive runtimes:
 - `ANTHROPIC_API_KEY` must be set in your host env. It is passed through to the DTU and is
   required to run a real model. The AI-user judge also uses it (host-side).
 
-The provisioned DTU installs, at pinned versions: `opencode` (1.17.20), `amplifier-agent`,
-and `amplifier-opencode`, plus `git`, `curl`, `uv`, and `tmux`.
+The provisioned DTU installs `opencode` at a pinned version (`1.17.20`), plus
+`amplifier-agent` (from latest main; must satisfy amplifier-opencode's minimum,
+currently `>= 0.9.3`) and `amplifier-opencode`, plus `git`, `curl`, `uv`, and `tmux`.
 
 ## Running
 
@@ -70,7 +80,7 @@ and `amplifier-opencode`, plus `git`, `curl`, `uv`, and `tmux`.
 # from the amplifier-app-opencode repo root
 uv run python tests/e2e/cli.py up          # provision a warm DTU (installs the opencode stack)
 uv run python tests/e2e/cli.py run          # run all suites (auto-provisions if not warm)
-uv run python tests/e2e/cli.py run chat     # scope to one suite
+uv run python tests/e2e/cli.py run modes    # scope to one suite (chat, modes, shadowing, skills, traversal)
 uv run python tests/e2e/cli.py down         # destroy the DTU
 uv run python tests/e2e/cli.py list         # list discovered suites (no DTU needed)
 ```
@@ -85,9 +95,9 @@ A normal `uv run pytest` (without the harness) stays green: the e2e tests self-s
 ### Fast inner loop
 
 ```bash
-uv run python tests/e2e/cli.py run chat --skip-setup    # re-run against the existing warm DTU (no reprovision)
-uv run python tests/e2e/cli.py refresh                  # re-mirror local trees + reinstall in place
-uv run python tests/e2e/cli.py run chat --ephemeral     # tear the DTU down after the run
+uv run python tests/e2e/cli.py run modes --skip-setup    # re-run against the existing warm DTU (no reprovision)
+uv run python tests/e2e/cli.py refresh                   # re-mirror local trees + reinstall in place
+uv run python tests/e2e/cli.py run skills --ephemeral    # tear the DTU down after the run
 ```
 
 `--skip-setup` reuses the warm DTU as-is (fastest; ~20s). `refresh` re-pushes your local
@@ -101,7 +111,7 @@ relaunch (see "Running against local code" below).
 code path works locally (`tmux ...`) and inside the DTU
 (`amplifier-digital-twin exec <id> -- tmux ...`) via an `exec_prefix`.
 
-Three rules the driver enforces (learned from spikes; do not remove):
+Three rules the driver enforces (do not remove):
 
 - `remain-on-exit on` is set right after `new-session`, so a crashed or exited opencode
   leaves a readable final screen instead of the session vanishing.
@@ -178,6 +188,11 @@ def test_myfeature(case, opencode_session, judge):
 ```
 
 4. Run it: `uv run python tests/e2e/cli.py run <name>`.
+
+A non-TUI suite is also a supported shape (see `shadowing` / `traversal`): skip
+`cases.py`, seed fixture files from `fixtures/*.md.tmpl` in `conftest.py`, drive
+`amplifier-opencode prepare` with `driver.run_command`, and assert on its stdout and
+the resulting filesystem state instead of a captured screen.
 
 ## Running against local code (default)
 

@@ -5,8 +5,7 @@ By default the DTU install script installs ``amplifier-agent`` and
 install BOTH from the developer's LOCAL (possibly uncommitted) working trees
 instead, so an E2E run reflects work that has not yet landed upstream.
 
-Mechanism (identical in spirit to the amplifier-agent eval harness's single-repo
-mirror, generalized here to MANY repos):
+Mechanism:
 
 1. Stand up (or reuse) a long-lived Gitea container via the ``amplifier-gitea``
    CLI. This harness uses a DEDICATED name/port (``oc-e2e`` / ``10130``) so it

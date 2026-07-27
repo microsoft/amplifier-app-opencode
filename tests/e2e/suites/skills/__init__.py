@@ -12,10 +12,9 @@ amplifier discovery dir), a negative case (a model-invocable skill must NOT appe
 command), and invocation (running the command runs the skill and passes trailing text as
 arguments).
 
-These are intentionally-FAILING (TDD) tests: the launcher does not yet bridge amplifier-agent
-user-invoked skills into opencode commands, so the amplifier cases go red until that feature
-is built. The env and hostcfg cases additionally require the launched server to be pointed at
-those dirs (see the LIMITATION notes in ``conftest.py``).
+The suite's own ``skills_session`` fixture launches the TUI with ``AMPLIFIER_SKILLS_DIR``
+and ``--host-config`` set, so the env and hostcfg discovery dirs are visible to the server
+it starts.
 """
 
 from __future__ import annotations

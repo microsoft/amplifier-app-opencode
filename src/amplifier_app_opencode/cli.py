@@ -117,9 +117,9 @@ GLOBAL_OPENCODE_DIR = Path.home() / ".config" / "opencode"
 #   https://github.com/sst/models -- the same registry opencode uses.
 #
 # Maintenance: when an upstream provider changes prices, update this
-# table. amplifier-agent's per-turn ``cost_usd`` (PR #68 on amplifier-agent)
-# still ships the authoritative dollar value on the wire for clients that
-# read it; this catalog is purely for opencode's TUI cost display.
+# table. amplifier-agent ships the authoritative per-turn ``cost_usd`` on
+# the wire for clients that read it; this catalog is purely for opencode's
+# TUI cost display.
 #
 # Verified pricing date: 2026-06-21.
 MODEL_PRICING_PER_MILLION: dict[str, dict[str, float]] = {
@@ -372,14 +372,13 @@ def build_provider_block(
         model's advertised context window is capped at this value so
         opencode compacts before the real enforced limit. Left ``None``
         (the default) the adapter forwards the backend's value verbatim --
-        the proper fix is for the backend to advertise a window it can
-        honor (tracked upstream in amplifier-module-provider-anthropic).
+        the proper fix belongs in the provider module, which should
+        advertise a window it can honor.
 
-    Note: amplifier-agent's PR #68 ALSO surfaces real per-turn
-    ``cost_usd`` on the chat-completions response (telemetry on the
-    wire). The catalog here is for opencode's TUI display since
-    opencode's @ai-sdk/openai-compatible adapter doesn't read
-    ``cost_usd`` today.
+    Note: amplifier-agent ALSO surfaces real per-turn ``cost_usd`` on the
+    chat-completions response (telemetry on the wire). The catalog here is
+    for opencode's TUI display since opencode's @ai-sdk/openai-compatible
+    adapter doesn't read ``cost_usd`` today.
     """
     models_block: dict[str, dict[str, Any]] = {}
     for m in models:
@@ -502,17 +501,10 @@ def write_opencode_config(
 # Shared bridge-name validation (used by BOTH the skills and modes bridges)
 # ---------------------------------------------------------------------------
 
-# Both bridges turn a server-supplied ``name`` into a FILENAME under a directory we
-# own. That name is attacker-influenced: a skill's name is read verbatim from SKILL.md
-# YAML frontmatter (upstream tool-skills discovery checks it against its own pattern but
-# only logs a warning and registers it anyway), and any actor who can drop a file into a
-# discovery dir controls it. Without a shape check, ``command_dir / f"{name}.md"`` with
-# a name like ``../../../../tmp/evil`` escapes the directory entirely, and
-# ``_atomic_write_text``'s ``os.replace`` overwrites the target silently.
-#
-# Worse, the name is persisted in the ownership manifest, so the NEXT run's prune step
-# (``(command_dir / stale).unlink()``) turns it into an arbitrary-delete primitive.
-# Validating here -- at fetch, before anything is written or recorded -- closes both.
+# Both bridges turn a server-supplied ``name`` into a FILENAME under a directory we own,
+# and a later prune step unlinks by that same recorded name. A bridged name must therefore
+# be a bare filename of ``[A-Za-z0-9._-]``, validated at fetch -- before it can reach any
+# write or unlink.
 _SAFE_BRIDGE_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
 
@@ -612,14 +604,14 @@ def _normalized_bridge_row(row: dict[str, Any]) -> dict[str, Any]:
 def render_bridge_conflicts(kind: str, entries: list[dict[str, Any]]) -> None:
     """Print the name collisions the agent reported for ``kind`` (skills / modes).
 
-    A shadowed override used to vanish silently: the user dropped a ``code-review``
-    override into ``~/.amplifier/skills`` and never found out that a same-named file
-    earlier in the search order was the one actually running. The agent now reports
-    both sides; this surfaces them at launch, where the user is already looking.
+    For each resource the agent reports a collision on, prints the file that actually
+    runs plus every same-named file that lost to it. An override that loses is otherwise
+    invisible -- a same-named file earlier in the search order runs instead, with nothing
+    on screen to say so -- and launch is where the user is already looking.
 
     Prints NOTHING when no entry carries a shadowed file, so a clean setup stays quiet.
-    Re-normalizes defensively so the helper is total on any input (it is also the unit
-    under test, and must not depend on having been fed post-fetch rows).
+    Re-normalizes defensively so the helper is total on any input; it must not require
+    rows that have already been through the fetch-time normalization.
     """
     conflicts = [(entry, _normalized_shadowed(entry.get("shadowed"))) for entry in entries]
     conflicts = [(entry, losers) for entry, losers in conflicts if losers]

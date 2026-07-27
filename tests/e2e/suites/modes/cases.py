@@ -22,12 +22,11 @@ built-in ``plan``/``brainstorm`` cases assert their real read-only / exploratory
 from the visible reply. Persistence is checked purely from what the TUI shows (the active
 agent stays selected across turns).
 
-Every case is EXPECTED to fail today. The launcher does not yet read ``GET /v1/modes`` or
-generate any ``amplifier-<mode>`` primary-agent files, so no amplifier mode appears in the
-agent list. Group B additionally depends on amplifier-agent applying the selected mode,
-which is also unbuilt. Assertions are made
-ONLY on user-visible screen state via the AI judge -- never on logs or generated files --
-so a test breaks only if the user-facing behavior breaks.
+Group A rests on the launcher reading ``GET /v1/modes`` and generating the
+``amplifier-<mode>`` primary-agent files; Group B additionally on amplifier-agent applying
+the selected mode. Assertions are made ONLY on user-visible screen state via the AI judge
+-- never on logs or generated files -- so a test breaks only if the user-facing behavior
+breaks.
 """
 
 from __future__ import annotations
