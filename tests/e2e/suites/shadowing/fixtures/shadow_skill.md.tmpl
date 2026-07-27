@@ -1,0 +1,11 @@
+---
+name: {NAME}
+description: E2E shadowing probe seeded in {ORIGIN}; only the winning copy is ever listed.
+user-invocable: true
+disable-model-invocation: true
+---
+# E2E Shadowing Probe ({NAME}, {ORIGIN} copy)
+
+This file exists only so two discovery roots claim the same skill name. It is never
+invoked by the suite -- the assertions are about the launcher's conflict REPORT and the
+command file it generates, not about running the skill.

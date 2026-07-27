@@ -3,6 +3,11 @@
 Covers:
   - fetch_modes() parses the ``data`` list on 200 and returns [] on any
     error (network error, non-200, malformed JSON, wrong shape).
+  - fetch_modes() normalizes the provenance fields (``source``/``shadowed``)
+    the agent reports, defensively -- the agent is a separate process on its
+    own release cadence, so a missing or malformed field must degrade, never
+    raise.
+  - render_bridge_conflicts() reports every shadowed file for the modes face.
   - resolve_agent_dir() returns the project-scope agent dir when a project
     dir is given and the global agent dir otherwise.
   - write_agent_files() writes correct frontmatter (mode: primary, description,
@@ -10,12 +15,14 @@ Covers:
     plus sidecar-manifest reconciliation:
       * stale generated files are pruned on a later run
       * a user's own (unowned) agent file is never overwritten
+      * two modes mapping to the same filename in ONE run: first wins
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -23,6 +30,7 @@ import pytest
 from amplifier_app_opencode.cli import (
     GLOBAL_OPENCODE_DIR,
     fetch_modes,
+    render_bridge_conflicts,
     resolve_agent_dir,
     write_agent_files,
 )
@@ -52,16 +60,36 @@ class _FakeResponse:
         return self._json_data
 
 
+def _fetch_with_data(monkeypatch: pytest.MonkeyPatch, data: Any) -> list[dict[str, Any]]:
+    """Run fetch_modes() against a stubbed 200 response carrying ``data``."""
+    monkeypatch.setattr(
+        "amplifier_app_opencode.cli.httpx.get",
+        lambda *a, **kw: _FakeResponse(json_data={"object": "list", "data": data}),
+    )
+    return fetch_modes("http://127.0.0.1:9099/v1", "key")
+
+
 def test_fetch_modes_parses_data_on_200(monkeypatch: pytest.MonkeyPatch) -> None:
     modes = [
         {"name": "plan", "description": "Read-only planning mode."},
         {"name": "brainstorm", "description": "Exploratory design mode."},
     ]
-    monkeypatch.setattr(
-        "amplifier_app_opencode.cli.httpx.get",
-        lambda *a, **kw: _FakeResponse(json_data={"object": "list", "data": modes}),
-    )
-    assert fetch_modes("http://127.0.0.1:9099/v1", "key") == modes
+    # ``source``/``shadowed`` are always materialised (see the normalization tests
+    # below); name and description pass through untouched.
+    assert _fetch_with_data(monkeypatch, modes) == [
+        {
+            "name": "plan",
+            "description": "Read-only planning mode.",
+            "source": "",
+            "shadowed": [],
+        },
+        {
+            "name": "brainstorm",
+            "description": "Exploratory design mode.",
+            "source": "",
+            "shadowed": [],
+        },
+    ]
 
 
 def test_fetch_modes_returns_empty_on_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,6 +123,128 @@ def test_fetch_modes_returns_empty_on_missing_key(monkeypatch: pytest.MonkeyPatc
         lambda *a, **kw: _FakeResponse(json_data={"object": "list"}),
     )
     assert fetch_modes("http://127.0.0.1:9099/v1", "key") == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_modes(): provenance normalization (source / shadowed)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_modes_passes_wellformed_shadowed_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A well-formed conflict report survives the fetch layer intact."""
+    rows = _fetch_with_data(
+        monkeypatch,
+        [
+            {
+                "name": "plan",
+                "description": "Read-only planning mode.",
+                "source": "/root/oc-e2e/.amplifier/modes/plan.md",
+                "shadowed": [
+                    {"source": "/root/.amplifier/modes/plan.md"},
+                    {"source": "/opt/bundle/modes/plan.md"},
+                ],
+            }
+        ],
+    )
+    assert rows[0]["source"] == "/root/oc-e2e/.amplifier/modes/plan.md"
+    assert rows[0]["shadowed"] == [
+        {"source": "/root/.amplifier/modes/plan.md"},
+        {"source": "/opt/bundle/modes/plan.md"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param({"name": "m"}, id="absent"),
+        pytest.param({"name": "m", "shadowed": None}, id="null"),
+        pytest.param({"name": "m", "shadowed": "a-string"}, id="string"),
+        pytest.param({"name": "m", "shadowed": ["a", "b"]}, id="list-of-strings"),
+        pytest.param({"name": "m", "shadowed": [{"path": "/x"}]}, id="dict-missing-source"),
+        pytest.param({"name": "m", "shadowed": [{"source": ""}]}, id="dict-empty-source"),
+        pytest.param({"name": "m", "shadowed": [{"source": 7}]}, id="dict-nonstring-source"),
+        pytest.param({"name": "m", "shadowed": {"source": "/x"}}, id="bare-dict"),
+    ],
+)
+def test_fetch_modes_normalizes_malformed_shadowed(
+    row: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any malformed ``shadowed`` degrades to ``[]`` -- never an exception."""
+    rows = _fetch_with_data(monkeypatch, [row])
+    assert rows[0]["shadowed"] == []
+
+
+def test_fetch_modes_normalizes_partially_malformed_shadowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bad elements are dropped; the good ones are kept."""
+    rows = _fetch_with_data(
+        monkeypatch,
+        [
+            {
+                "name": "m",
+                "shadowed": ["junk", {"source": "/good/one"}, {"nope": 1}, {"source": "/good/two"}],
+            }
+        ],
+    )
+    assert rows[0]["shadowed"] == [{"source": "/good/one"}, {"source": "/good/two"}]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param({"name": "m"}, id="absent"),
+        pytest.param({"name": "m", "source": None}, id="null"),
+        pytest.param({"name": "m", "source": 42}, id="non-string"),
+    ],
+)
+def test_fetch_modes_normalizes_missing_source(
+    row: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing/malformed entry ``source`` becomes ``""``."""
+    assert _fetch_with_data(monkeypatch, [row])[0]["source"] == ""
+
+
+# ---------------------------------------------------------------------------
+# render_bridge_conflicts() -- the modes face of the shared helper
+# ---------------------------------------------------------------------------
+
+
+def test_render_bridge_conflicts_reports_every_shadowed_mode(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    render_bridge_conflicts(
+        "modes",
+        [
+            {
+                "name": "plan",
+                "source": "/root/oc-e2e/.amplifier/modes/plan.md",
+                "shadowed": [
+                    {"source": "/root/.amplifier/modes/plan.md"},
+                    {"source": "/opt/bundle/modes/plan.md"},
+                ],
+            },
+            {"name": "brainstorm", "source": "/opt/bundle/modes/brainstorm.md", "shadowed": []},
+        ],
+    )
+    out = capsys.readouterr().out
+    assert "modes: 1 name conflict" in out
+    assert "plan" in out
+    assert "/root/oc-e2e/.amplifier/modes/plan.md" in out
+    assert "/root/.amplifier/modes/plan.md" in out
+    assert "/opt/bundle/modes/plan.md" in out
+    assert out.count("shadowed:") == 2
+    assert "brainstorm" not in out
+
+
+def test_render_bridge_conflicts_modes_silent_when_clean(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    render_bridge_conflicts(
+        "modes",
+        [{"name": "plan", "source": "/opt/bundle/modes/plan.md", "shadowed": []}],
+    )
+    assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
@@ -194,9 +344,46 @@ def test_write_agent_files_prunes_stale_on_second_run(tmp_path: Path) -> None:
     assert data["agents"] == ["amplifier-plan.md"]
 
 
+def test_write_agent_files_skips_intra_run_duplicate_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two modes mapping to the same filename in ONE run: the first one wins.
+
+    Without the guard the second write silently clobbers the first and the manifest
+    records the filename twice.
+    """
+    agent_dir = tmp_path / ".opencode" / "agent"
+    write_agent_files(
+        [
+            {"name": "plan", "description": "FIRST"},
+            {"name": "plan", "description": "SECOND"},
+        ],
+        agent_dir,
+    )
+
+    # First wins: the file on disk is the first entry's content.
+    content = _read(agent_dir / "amplifier-plan.md")
+    assert json.loads(_frontmatter_value(content, "description")) == "FIRST"
+
+    # Warning names the mode and the file.
+    out = capsys.readouterr().out
+    assert "amplifier-plan.md" in out
+    assert "plan" in out
+    assert "duplicate" in out.lower()
+
+    # Recorded exactly once.
+    manifest = agent_dir.parent / ".amplifier-generated-agents.json"
+    assert json.loads(_read(manifest))["agents"] == ["amplifier-plan.md"]
+
+
 def test_write_agent_files_leaves_unowned_file_untouched(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """REGRESSION: the ownership-skip path is unchanged by the duplicate guard.
+
+    The duplicate check is an ADDITIONAL, separate check; a pre-existing file that
+    this launcher did not generate must still be skipped and left byte-identical.
+    """
     agent_dir = tmp_path / ".opencode" / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
 
@@ -204,11 +391,13 @@ def test_write_agent_files_leaves_unowned_file_untouched(
     user_file = agent_dir / "amplifier-plan.md"
     original = "---\nmode: primary\ndescription: my own agent\n---\nHi.\n"
     user_file.write_text(original, encoding="utf-8")
+    original_bytes = user_file.read_bytes()
 
     write_agent_files([{"name": "plan", "description": "Amplifier version"}], agent_dir)
 
-    # Untouched.
+    # Untouched, byte for byte.
     assert _read(user_file) == original
+    assert user_file.read_bytes() == original_bytes
     # Warning emitted.
     out = capsys.readouterr().out
     assert "amplifier-plan.md" in out

@@ -568,6 +568,79 @@ def _usable_bridge_rows(data: list[Any], kind: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _normalized_shadowed(raw: Any) -> list[dict[str, str]]:
+    """Coerce a server-supplied ``shadowed`` field into ``[{"source": str}, ...]``.
+
+    amplifier-agent reports, per resource, the file that actually RUNS (``source``)
+    plus every same-named file that lost to it (``shadowed``). The agent is a separate
+    process on its own release cadence, so this launcher must not assume the field is
+    present or well-shaped: an older server omits it entirely, and any future shape
+    drift must degrade to "no conflicts known" rather than crash a launch.
+
+    Anything that is not a dict carrying a non-empty string ``source`` is dropped, and
+    each surviving entry is rebuilt as a minimal ``{"source": ...}`` so downstream
+    rendering never has to re-validate.
+    """
+    if not isinstance(raw, list):
+        return []
+    losers: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        source = entry.get("source")
+        if not isinstance(source, str) or not source:
+            continue
+        losers.append({"source": source})
+    return losers
+
+
+def _normalized_bridge_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Return ``row`` with ``source`` and ``shadowed`` coerced to their contract shape.
+
+    ``name`` and ``description`` are passed through untouched -- their handling is
+    already settled by ``_usable_bridge_rows`` and the write loops. Only the two
+    provenance fields are normalized here, so every consumer downstream can rely on
+    ``source`` being a ``str`` and ``shadowed`` being a clean list.
+    """
+    normalized = dict(row)
+    source = row.get("source")
+    normalized["source"] = source if isinstance(source, str) else ""
+    normalized["shadowed"] = _normalized_shadowed(row.get("shadowed"))
+    return normalized
+
+
+def render_bridge_conflicts(kind: str, entries: list[dict[str, Any]]) -> None:
+    """Print the name collisions the agent reported for ``kind`` (skills / modes).
+
+    A shadowed override used to vanish silently: the user dropped a ``code-review``
+    override into ``~/.amplifier/skills`` and never found out that a same-named file
+    earlier in the search order was the one actually running. The agent now reports
+    both sides; this surfaces them at launch, where the user is already looking.
+
+    Prints NOTHING when no entry carries a shadowed file, so a clean setup stays quiet.
+    Re-normalizes defensively so the helper is total on any input (it is also the unit
+    under test, and must not depend on having been fed post-fetch rows).
+    """
+    conflicts = [(entry, _normalized_shadowed(entry.get("shadowed"))) for entry in entries]
+    conflicts = [(entry, losers) for entry, losers in conflicts if losers]
+    if not conflicts:
+        return
+
+    plural = "" if len(conflicts) == 1 else "s"
+    click.secho(
+        f"      {kind}: {len(conflicts)} name conflict{plural} "
+        "(the file under 'runs' is the one that runs):",
+        fg="yellow",
+    )
+    for entry, losers in conflicts:
+        name = entry.get("name", "")
+        source = entry.get("source", "")
+        click.secho(f"        {name if isinstance(name, str) else ''}", fg="yellow")
+        click.secho(f"          runs:     {source if isinstance(source, str) else ''}", fg="yellow")
+        for loser in losers:
+            click.secho(f"          shadowed: {loser['source']}", fg="yellow")
+
+
 # ---------------------------------------------------------------------------
 # Skills bridge: /v1/skills -> opencode /command files
 # ---------------------------------------------------------------------------
@@ -591,6 +664,10 @@ def fetch_skills(base_url: str, api_key: str) -> list[dict[str, Any]]:
     are dropped here via the shared :func:`_usable_bridge_rows`. Filtering at fetch --
     rather than at write -- means an unsafe name can never reach the ownership manifest
     either, which is what closes the delayed-delete path through the prune step.
+
+    Every surviving row is passed through :func:`_normalized_bridge_row`, so callers can
+    rely on ``source`` being a ``str`` and ``shadowed`` being a list of
+    ``{"source": str}`` regardless of what the (separately-versioned) server sent.
     """
     try:
         r = httpx.get(
@@ -607,7 +684,7 @@ def fetch_skills(base_url: str, api_key: str) -> list[dict[str, Any]]:
     data = body.get("data", [])
     if not isinstance(data, list):
         return []
-    return _usable_bridge_rows(data, "skills")
+    return [_normalized_bridge_row(row) for row in _usable_bridge_rows(data, "skills")]
 
 
 def resolve_command_dir(project_dir: Path | None) -> Path:
@@ -701,6 +778,18 @@ def write_command_files(skills: list[dict[str, Any]], command_dir: Path) -> None
         filename = f"{name}.md"
         target = command_dir / filename
 
+        # Two skills in THIS run can map to the same filename (two rows carrying the
+        # same name -- e.g. a server that stopped de-duplicating). Without this the
+        # second write silently clobbers the first and the manifest lists the file
+        # twice. First wins, matching the agent's own first-match-wins discipline.
+        if filename in new_owned:
+            click.secho(
+                f"      skills: skipping duplicate {filename} -- more than one skill is "
+                f"named {name!r} in this run (keeping the first)",
+                fg="yellow",
+            )
+            continue
+
         # Never overwrite a user's own command file: it exists but we didn't
         # generate it (not in the previous run's manifest).
         if target.exists() and filename not in old_owned:
@@ -763,6 +852,10 @@ def fetch_modes(base_url: str, api_key: str) -> list[dict[str, Any]]:
     be ``..`` or contain a backslash (which traverses on Windows), and
     ``MODE_AGENT_PREFIX`` offers no protection since ``amplifier-../../evil`` still
     resolves through the ``..`` segments.
+
+    Every surviving row is passed through :func:`_normalized_bridge_row`, so callers can
+    rely on ``source`` being a ``str`` and ``shadowed`` being a list of
+    ``{"source": str}`` regardless of what the (separately-versioned) server sent.
     """
     try:
         r = httpx.get(
@@ -780,7 +873,11 @@ def fetch_modes(base_url: str, api_key: str) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         return []
     # Keep only well-formed rows that at least carry a usable name.
-    return [m for m in data if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]]
+    return [
+        _normalized_bridge_row(m)
+        for m in data
+        if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]
+    ]
 
 
 def resolve_agent_dir(project_dir: Path | None) -> Path:
@@ -841,6 +938,18 @@ def write_agent_files(
             continue
         filename = f"{MODE_AGENT_PREFIX}{name}.md"
         target = agent_dir / filename
+
+        # Two modes in THIS run can map to the same filename (two rows carrying the
+        # same name -- e.g. a server that stopped de-duplicating). Without this the
+        # second write silently clobbers the first and the manifest lists the file
+        # twice. First wins, matching the agent's own first-match-wins discipline.
+        if filename in new_owned:
+            click.secho(
+                f"      modes: skipping duplicate {filename} -- more than one mode is "
+                f"named {name!r} in this run (keeping the first)",
+                fg="yellow",
+            )
+            continue
 
         # Never overwrite a user's own agent file: it exists but we didn't
         # generate it (not in the previous run's manifest).
@@ -1068,6 +1177,8 @@ def _run_launch(
                 f"      Bridged {len(skills)} skill command(s) into {command_dir}",
                 fg="green",
             )
+        # Surface any same-name collisions the agent resolved for us. Silent when clean.
+        render_bridge_conflicts("skills", skills)
     except Exception as exc:  # skills are optional, never fatal
         click.secho(
             f"      WARNING: skills bridge failed ({exc}); continuing without commands.",
@@ -1087,6 +1198,8 @@ def _run_launch(
                 f"      Bridged {len(modes)} mode(s) into {agent_dir}",
                 fg="green",
             )
+        # Surface any same-name collisions the agent resolved for us. Silent when clean.
+        render_bridge_conflicts("modes", modes)
     except Exception as exc:  # modes are optional, never fatal
         click.secho(
             f"      WARNING: modes bridge failed ({exc}); continuing without mode agents.",
