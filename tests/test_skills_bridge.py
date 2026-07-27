@@ -29,9 +29,11 @@ import pytest
 
 from amplifier_app_opencode.cli import (
     GLOBAL_OPENCODE_DIR,
+    SKILL_COMMAND_DESCRIPTION_PREFIX,
     fetch_skills,
     render_bridge_conflicts,
     resolve_command_dir,
+    skill_command_description,
     write_command_files,
 )
 
@@ -289,6 +291,25 @@ def _frontmatter_description(content: str) -> str:
     return json.loads(value)
 
 
+def test_skill_command_description_marks_provenance() -> None:
+    """Bridged skills lead with "(Amplifier)" so the "/" menu shows where they came from.
+
+    The marker LEADS rather than trails (unlike the modes suffix) because opencode's
+    command autocomplete truncates the description to the popup width with no ellipsis --
+    a trailing marker would be cut off and never seen.
+    """
+    assert skill_command_description("Convene the panel.") == "(Amplifier) Convene the panel."
+    assert SKILL_COMMAND_DESCRIPTION_PREFIX == "(Amplifier) "
+
+    # Idempotent: re-running the launcher over an already-marked description must not
+    # stack prefixes.
+    once = skill_command_description("Convene the panel.")
+    assert skill_command_description(once) == once
+
+    # An empty description still gets marked (the command is still ours).
+    assert skill_command_description("") == "(Amplifier) "
+
+
 def test_write_command_files_writes_frontmatter_and_body(tmp_path: Path) -> None:
     command_dir = tmp_path / ".opencode" / "command"
     skills = [
@@ -305,12 +326,16 @@ def test_write_command_files_writes_frontmatter_and_body(tmp_path: Path) -> None
     cr_content = _read(cr)
     # Exact body line.
     assert cr_content.splitlines()[-1] == "!amplifier:skill code-review $ARGUMENTS"
-    # Description present and round-trips (valid YAML/JSON, special chars safe).
-    assert _frontmatter_description(cr_content) == 'Review changed code: colons "quotes" & more'
+    # Description present and round-trips (valid YAML/JSON, special chars safe), carrying
+    # the "(Amplifier)" provenance marker at the head.
+    assert (
+        _frontmatter_description(cr_content)
+        == '(Amplifier) Review changed code: colons "quotes" & more'
+    )
 
     co_content = _read(co)
     assert co_content.splitlines()[-1] == "!amplifier:skill council $ARGUMENTS"
-    assert _frontmatter_description(co_content) == "Convene the panel."
+    assert _frontmatter_description(co_content) == "(Amplifier) Convene the panel."
 
     # Manifest records both generated files.
     manifest = command_dir.parent / ".amplifier-generated-commands.json"
@@ -359,7 +384,7 @@ def test_write_command_files_skips_intra_run_duplicate_name(
 
     # First wins: the file on disk is the first entry's content.
     content = _read(command_dir / "code-review.md")
-    assert _frontmatter_description(content) == "FIRST"
+    assert _frontmatter_description(content) == "(Amplifier) FIRST"
 
     # Warning names the skill and the file.
     out = capsys.readouterr().out

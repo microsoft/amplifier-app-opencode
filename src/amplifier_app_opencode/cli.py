@@ -651,6 +651,25 @@ def render_bridge_conflicts(kind: str, entries: list[dict[str, Any]]) -> None:
 # manifest lives next to the command dir (in its parent scope dir).
 GENERATED_COMMANDS_MANIFEST = ".amplifier-generated-commands.json"
 
+# Marker prepended to a bridged skill's DESCRIPTION so the "/" command menu shows at
+# a glance which commands came from amplifier-agent rather than opencode itself. This
+# mirrors MODE_AGENT_DISPLAY_SUFFIX for modes, but leads rather than trails: opencode's
+# autocomplete truncates the description to the popup width with no ellipsis, so a
+# trailing marker would simply be cut off and never seen. Display-only -- the
+# description returned by GET /v1/skills is left untouched.
+SKILL_COMMAND_DESCRIPTION_PREFIX = "(Amplifier) "
+
+
+def skill_command_description(description: str) -> str:
+    """Return the user-visible command description for a bridged skill.
+
+    Idempotent: a description that already carries the marker is returned unchanged, so
+    re-running the launcher over its own generated files can't stack prefixes.
+    """
+    if description.startswith(SKILL_COMMAND_DESCRIPTION_PREFIX):
+        return description
+    return f"{SKILL_COMMAND_DESCRIPTION_PREFIX}{description}"
+
 
 def fetch_skills(base_url: str, api_key: str) -> list[dict[str, Any]]:
     """Return user-invocable skills from amplifier-agent's /v1/skills.
@@ -805,7 +824,7 @@ def write_command_files(skills: list[dict[str, Any]], command_dir: Path) -> None
             description = str(description)
         content = (
             "---\n"
-            f"description: {json.dumps(description)}\n"
+            f"description: {json.dumps(skill_command_description(description))}\n"
             "---\n"
             f"!amplifier:skill {name} $ARGUMENTS\n"
         )

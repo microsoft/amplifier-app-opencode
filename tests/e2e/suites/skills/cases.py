@@ -45,12 +45,44 @@ def _command_discovery_case(case_name: str, skill_name: str) -> TUICase:
     as a menu ENTRY of the form ``/<name>   <description>``. That description column is
     what distinguishes a real menu entry from the bare ``/<name>`` echoed in the input
     box, so we gate deterministically on it: the command name followed by two-or-more
-    spaces and a word character (the start of the description). This is a stronger,
+    spaces and any non-space character (the start of the description). This is a stronger,
     non-flaky assertion than asking an AI judge to eyeball "menu entry vs input text"
     (which misfired on this near-identical layout), and it naturally waits for the popup
     to finish rendering.
+
+    The gate is ``\\S`` rather than ``\\w`` on purpose: bridged descriptions now lead with
+    the ``(Amplifier)`` provenance marker, whose ``(`` is not a word character. Discovery
+    deliberately stays agnostic about WHAT the description says -- asserting the marker is
+    the separate concern of ``_command_description_prefix_case``.
     """
-    menu_entry = rf"/{re.escape(skill_name)}\s\s+\w"
+    menu_entry = rf"/{re.escape(skill_name)}\s\s+\S"
+    return TUICase(
+        case_name,
+        [
+            Step("send_text", f"/{skill_name}"),
+            Step("wait", menu_entry, timeout=30.0, regex=True),
+            Step("send_keys", "Escape"),
+        ],
+    )
+
+
+def _command_description_prefix_case(case_name: str, skill_name: str) -> TUICase:
+    """Assert the command menu entry's DESCRIPTION starts with the ``(Amplifier)`` marker.
+
+    Every skill bridged from amplifier-agent is prefixed with ``(Amplifier)`` so a user
+    scanning opencode's "/" menu can tell at a glance which commands came from the agent
+    versus opencode's own built-ins. This is a launcher-layer display concern only (the
+    same shape as the ``(Amplifier)`` suffix already used for bridged mode agents); the
+    description returned by ``GET /v1/skills`` is unchanged.
+
+    The autocomplete renders each entry as ``/<name>   <description>``, so the assertion is
+    the command name, the column gap, then the literal marker as the FIRST thing in the
+    description column. The trailing ``\\w`` requires the skill's own description to still
+    follow the marker -- the prefix must decorate the description, not replace it. Nothing
+    is asserted past that word character because the popup truncates long descriptions to
+    the pane width.
+    """
+    menu_entry = rf"/{re.escape(skill_name)}\s\s+\(Amplifier\)\s+\w"
     return TUICase(
         case_name,
         [
@@ -119,6 +151,9 @@ _DISCOVERY_CASES: list[TUICase] = [
     _command_discovery_case("discover-amplifier-hostconfig", "e2e-amp-hostcfg"),
     # NEGATIVE: a model-invocable amplifier skill must NOT surface as a command.
     _command_absent_case("hidden-model-invocable-skill", "e2e-amp-model"),
+    # PROVENANCE: bridged skills are marked "(Amplifier)" at the head of the description.
+    _command_description_prefix_case("description-prefix-builtin-code-review", "code-review"),
+    _command_description_prefix_case("description-prefix-amplifier-user", "e2e-amp-user"),
 ]
 
 
