@@ -41,13 +41,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import click
@@ -116,9 +117,9 @@ GLOBAL_OPENCODE_DIR = Path.home() / ".config" / "opencode"
 #   https://github.com/sst/models -- the same registry opencode uses.
 #
 # Maintenance: when an upstream provider changes prices, update this
-# table. amplifier-agent's per-turn ``cost_usd`` (PR #68 on amplifier-agent)
-# still ships the authoritative dollar value on the wire for clients that
-# read it; this catalog is purely for opencode's TUI cost display.
+# table. amplifier-agent ships the authoritative per-turn ``cost_usd`` on
+# the wire for clients that read it; this catalog is purely for opencode's
+# TUI cost display.
 #
 # Verified pricing date: 2026-06-21.
 MODEL_PRICING_PER_MILLION: dict[str, dict[str, float]] = {
@@ -226,12 +227,18 @@ def start_amplifier_agent(
     host_config: Path | None,
     api_key: str,
     binary: str | None,
+    cwd: Path | None = None,
 ) -> subprocess.Popen[bytes]:
     """Spawn ``amplifier-agent serve chat-completions`` in the background.
 
     Output is appended to /tmp/amplifier-agent.log. Liveness of an
     already-running instance is detected via an HTTP probe
     (``server_is_running``), not a PID file.
+
+    ``cwd`` sets the server's working directory. It must be the launch/project
+    dir so amplifier-agent's project-relative ``.amplifier/skills/`` discovery
+    finds skills seeded under the project (otherwise the server inherits our
+    CWD and silently misses project-scoped skills).
     """
     binary = binary or shutil.which("amplifier-agent")
     if not binary:
@@ -262,6 +269,7 @@ def start_amplifier_agent(
         stderr=log_fh,
         stdin=subprocess.DEVNULL,
         start_new_session=True,  # so amplifier-agent survives our exec
+        cwd=str(cwd) if cwd is not None else None,
     )
     return proc
 
@@ -364,14 +372,13 @@ def build_provider_block(
         model's advertised context window is capped at this value so
         opencode compacts before the real enforced limit. Left ``None``
         (the default) the adapter forwards the backend's value verbatim --
-        the proper fix is for the backend to advertise a window it can
-        honor (tracked upstream in amplifier-module-provider-anthropic).
+        the proper fix belongs in the provider module, which should
+        advertise a window it can honor.
 
-    Note: amplifier-agent's PR #68 ALSO surfaces real per-turn
-    ``cost_usd`` on the chat-completions response (telemetry on the
-    wire). The catalog here is for opencode's TUI display since
-    opencode's @ai-sdk/openai-compatible adapter doesn't read
-    ``cost_usd`` today.
+    Note: amplifier-agent ALSO surfaces real per-turn ``cost_usd`` on the
+    chat-completions response (telemetry on the wire). The catalog here is
+    for opencode's TUI display since opencode's @ai-sdk/openai-compatible
+    adapter doesn't read ``cost_usd`` today.
     """
     models_block: dict[str, dict[str, Any]] = {}
     for m in models:
@@ -488,6 +495,526 @@ def write_opencode_config(
         tmp_path.unlink(missing_ok=True)
         raise
     return config_path
+
+
+# ---------------------------------------------------------------------------
+# Shared bridge-name validation (used by BOTH the skills and modes bridges)
+# ---------------------------------------------------------------------------
+
+# Both bridges turn a server-supplied ``name`` into a FILENAME under a directory we own,
+# and a later prune step unlinks by that same recorded name. A bridged name must therefore
+# be a bare filename of ``[A-Za-z0-9._-]``, validated at fetch -- before it can reach any
+# write or unlink.
+_SAFE_BRIDGE_NAME = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def is_safe_bridge_name(name: str) -> bool:
+    """True if ``name`` is safe to use as a bare filename component.
+
+    Three independent conditions, deliberately redundant so loosening any one of them
+    cannot silently reopen traversal:
+
+    * the whitelist admits no ``/`` and no ``\\``, so no separator of either flavour
+      survives (the backslash case matters on Windows, where a mode name derived from a
+      file stem can legitimately contain one),
+    * ``.`` and ``..`` are rejected explicitly -- they pass the whitelist but are
+      directory references, not names,
+    * the name must equal its own basename and must not be absolute, which is the
+      general statement of the property the first two conditions approximate.
+    """
+    if not name or name in {".", ".."}:
+        return False
+    if not _SAFE_BRIDGE_NAME.fullmatch(name):
+        return False
+    pure = PurePosixPath(name)
+    return name == pure.name and not pure.is_absolute()
+
+
+def _usable_bridge_rows(data: list[Any], kind: str) -> list[dict[str, Any]]:
+    """Keep well-formed ``{name, ...}`` rows whose name is a safe filename component.
+
+    The SINGLE choke point for both ``fetch_skills`` and ``fetch_modes`` -- shared on
+    purpose so the two bridges cannot drift apart on what they consider acceptable.
+
+    Rejection is LOUD (a yellow warning naming the offender) rather than silent: a name
+    that fails this check is either a misconfigured resource the author needs to fix or
+    an attempted traversal the user needs to know about. Neither should be swallowed.
+    Rejection is also non-fatal -- one bad row must not block the launch, matching the
+    best-effort contract of the fetch functions.
+    """
+    rows: list[dict[str, Any]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if not is_safe_bridge_name(name):
+            click.secho(
+                f"      {kind}: refusing {name!r} -- unsafe name (must be a bare filename "
+                "of [A-Za-z0-9._-] characters); not bridged",
+                fg="yellow",
+            )
+            continue
+        rows.append(row)
+    return rows
+
+
+def _normalized_shadowed(raw: Any) -> list[dict[str, str]]:
+    """Coerce a server-supplied ``shadowed`` field into ``[{"source": str}, ...]``.
+
+    amplifier-agent reports, per resource, the file that actually RUNS (``source``)
+    plus every same-named file that lost to it (``shadowed``). The agent is a separate
+    process on its own release cadence, so this launcher must not assume the field is
+    present or well-shaped: an older server omits it entirely, and any future shape
+    drift must degrade to "no conflicts known" rather than crash a launch.
+
+    Anything that is not a dict carrying a non-empty string ``source`` is dropped, and
+    each surviving entry is rebuilt as a minimal ``{"source": ...}`` so downstream
+    rendering never has to re-validate.
+    """
+    if not isinstance(raw, list):
+        return []
+    losers: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        source = entry.get("source")
+        if not isinstance(source, str) or not source:
+            continue
+        losers.append({"source": source})
+    return losers
+
+
+def _normalized_bridge_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Return ``row`` with ``source`` and ``shadowed`` coerced to their contract shape.
+
+    ``name`` and ``description`` are passed through untouched -- their handling is
+    already settled by ``_usable_bridge_rows`` and the write loops. Only the two
+    provenance fields are normalized here, so every consumer downstream can rely on
+    ``source`` being a ``str`` and ``shadowed`` being a clean list.
+    """
+    normalized = dict(row)
+    source = row.get("source")
+    normalized["source"] = source if isinstance(source, str) else ""
+    normalized["shadowed"] = _normalized_shadowed(row.get("shadowed"))
+    return normalized
+
+
+def render_bridge_conflicts(kind: str, entries: list[dict[str, Any]]) -> None:
+    """Print the name collisions the agent reported for ``kind`` (skills / modes).
+
+    For each resource the agent reports a collision on, prints the file that actually
+    runs plus every same-named file that lost to it. An override that loses is otherwise
+    invisible -- a same-named file earlier in the search order runs instead, with nothing
+    on screen to say so -- and launch is where the user is already looking.
+
+    Prints NOTHING when no entry carries a shadowed file, so a clean setup stays quiet.
+    Re-normalizes defensively so the helper is total on any input; it must not require
+    rows that have already been through the fetch-time normalization.
+    """
+    conflicts = [(entry, _normalized_shadowed(entry.get("shadowed"))) for entry in entries]
+    conflicts = [(entry, losers) for entry, losers in conflicts if losers]
+    if not conflicts:
+        return
+
+    plural = "" if len(conflicts) == 1 else "s"
+    click.secho(
+        f"      {kind}: {len(conflicts)} name conflict{plural} "
+        "(the file under 'runs' is the one that runs):",
+        fg="yellow",
+    )
+    for entry, losers in conflicts:
+        name = entry.get("name", "")
+        source = entry.get("source", "")
+        click.secho(f"        {name if isinstance(name, str) else ''}", fg="yellow")
+        click.secho(f"          runs:     {source if isinstance(source, str) else ''}", fg="yellow")
+        for loser in losers:
+            click.secho(f"          shadowed: {loser['source']}", fg="yellow")
+
+
+# ---------------------------------------------------------------------------
+# Skills bridge: /v1/skills -> opencode /command files
+# ---------------------------------------------------------------------------
+
+# Sidecar manifest that records which command files THIS launcher generated.
+# opencode's command frontmatter schema is closed and rejects unknown keys, so
+# ownership can't live in the file itself -- we track it out-of-band. The
+# manifest lives next to the command dir (in its parent scope dir).
+GENERATED_COMMANDS_MANIFEST = ".amplifier-generated-commands.json"
+
+# Marker prepended to a bridged skill's DESCRIPTION so the "/" command menu shows at
+# a glance which commands came from amplifier-agent rather than opencode itself. This
+# mirrors MODE_AGENT_DISPLAY_SUFFIX for modes, but leads rather than trails: opencode's
+# autocomplete truncates the description to the popup width with no ellipsis, so a
+# trailing marker would simply be cut off and never seen. Display-only -- the
+# description returned by GET /v1/skills is left untouched.
+SKILL_COMMAND_DESCRIPTION_PREFIX = "(Amplifier) "
+
+
+def skill_command_description(description: str) -> str:
+    """Return the user-visible command description for a bridged skill.
+
+    Idempotent: a description that already carries the marker is returned unchanged, so
+    re-running the launcher over its own generated files can't stack prefixes.
+    """
+    if description.startswith(SKILL_COMMAND_DESCRIPTION_PREFIX):
+        return description
+    return f"{SKILL_COMMAND_DESCRIPTION_PREFIX}{description}"
+
+
+def fetch_skills(base_url: str, api_key: str) -> list[dict[str, Any]]:
+    """Return user-invocable skills from amplifier-agent's /v1/skills.
+
+    Mirrors :func:`fetch_models` (bearer auth + ``data`` extraction) but is
+    strictly best-effort: on ANY error (network failure, non-200, malformed
+    JSON, missing/oddly-shaped ``data``) it returns an empty list and never
+    raises. Skills are an optional enhancement; they must never block launch.
+
+    A skill's ``name`` becomes a FILENAME downstream, so rows carrying an unsafe name
+    are dropped here via the shared :func:`_usable_bridge_rows`. Filtering at fetch --
+    rather than at write -- means an unsafe name can never reach the ownership manifest
+    either, which is what closes the delayed-delete path through the prune step.
+
+    Every surviving row is passed through :func:`_normalized_bridge_row`, so callers can
+    rely on ``source`` being a ``str`` and ``shadowed`` being a list of
+    ``{"source": str}`` regardless of what the (separately-versioned) server sent.
+    """
+    try:
+        r = httpx.get(
+            f"{base_url.rstrip('/')}/skills",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15.0,
+        )
+        r.raise_for_status()
+        body = r.json()
+    except Exception:
+        return []
+    if not isinstance(body, dict):
+        return []
+    data = body.get("data", [])
+    if not isinstance(data, list):
+        return []
+    return [_normalized_bridge_row(row) for row in _usable_bridge_rows(data, "skills")]
+
+
+def resolve_command_dir(project_dir: Path | None) -> Path:
+    """Return the opencode command dir for the same scope as the provider config.
+
+    Matches how ``_run_launch`` chooses the provider-config path:
+      * ``project_dir`` given -> ``<project>/.opencode/command/``
+      * otherwise             -> ``~/.config/opencode/command/``
+    """
+    if project_dir is None:
+        return GLOBAL_OPENCODE_DIR / "command"
+    return project_dir / ".opencode" / "command"
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    Same idiom as :func:`write_opencode_config`: render to a sibling temp file,
+    then ``os.replace`` into place so a crash mid-write leaves any existing file
+    intact rather than truncated.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(text)
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _read_generated_manifest(manifest_path: Path, key: str = "commands") -> list[str]:
+    """Return the list of filenames a previous run generated.
+
+    Best-effort: a missing or corrupt manifest yields an empty list (we simply
+    treat every existing file as unowned and never clobber it). ``key`` selects
+    the manifest field (``commands`` for the skills bridge, ``agents`` for the
+    modes bridge) so the two bridges keep independent ownership manifests.
+    """
+    if not manifest_path.exists():
+        return []
+    try:
+        loaded = json.loads(manifest_path.read_text(encoding="utf-8") or "{}")
+    except (json.JSONDecodeError, OSError):
+        return []
+    items = loaded.get(key, []) if isinstance(loaded, dict) else loaded
+    if not isinstance(items, list):
+        return []
+    return [c for c in items if isinstance(c, str)]
+
+
+def _write_generated_manifest(manifest_path: Path, items: list[str], key: str = "commands") -> None:
+    """Persist the ownership manifest atomically under ``key``."""
+    payload = json.dumps({key: sorted(items)}, indent=2) + "\n"
+    _atomic_write_text(manifest_path, payload)
+
+
+def write_command_files(skills: list[dict[str, Any]], command_dir: Path) -> None:
+    """Materialise one opencode ``/command`` file per skill, with reconciliation.
+
+    Each skill ``{name, description}`` becomes ``{command_dir}/{name}.md``::
+
+        ---
+        description: "<skill description>"
+        ---
+        !amplifier:skill <name> $ARGUMENTS
+
+    The description is serialised with ``json.dumps`` -- a JSON string is also a
+    valid YAML double-quoted scalar, so colons, quotes and newlines cannot break
+    the frontmatter. The body line is emitted verbatim (opencode only treats a
+    leading ``!`` specially when immediately followed by a backtick).
+
+    Ownership is tracked in a sidecar manifest at
+    ``{command_dir.parent}/.amplifier-generated-commands.json``. On each run we:
+      * (re)write a file for every current skill and record it in the new manifest,
+      * delete files listed in the OLD manifest whose skill no longer exists,
+      * skip -- with a warning -- any target that already exists but is NOT in the
+        old manifest (a user's own command is never overwritten).
+    """
+    command_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = command_dir.parent / GENERATED_COMMANDS_MANIFEST
+    old_owned = set(_read_generated_manifest(manifest_path))
+
+    new_owned: list[str] = []
+    for skill in skills:
+        name = skill.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        filename = f"{name}.md"
+        target = command_dir / filename
+
+        # Two skills in THIS run can map to the same filename (two rows carrying the
+        # same name -- e.g. a server that stopped de-duplicating). Without this the
+        # second write silently clobbers the first and the manifest lists the file
+        # twice. First wins, matching the agent's own first-match-wins discipline.
+        if filename in new_owned:
+            click.secho(
+                f"      skills: skipping duplicate {filename} -- more than one skill is "
+                f"named {name!r} in this run (keeping the first)",
+                fg="yellow",
+            )
+            continue
+
+        # Never overwrite a user's own command file: it exists but we didn't
+        # generate it (not in the previous run's manifest).
+        if target.exists() and filename not in old_owned:
+            click.secho(
+                f"      skills: skipping {target.name} -- exists and was not "
+                "generated by amplifier-opencode (leaving your command untouched)",
+                fg="yellow",
+            )
+            continue
+
+        description = skill.get("description", "")
+        if not isinstance(description, str):
+            description = str(description)
+        content = (
+            "---\n"
+            f"description: {json.dumps(skill_command_description(description))}\n"
+            "---\n"
+            f"!amplifier:skill {name} $ARGUMENTS\n"
+        )
+        _atomic_write_text(target, content)
+        new_owned.append(filename)
+
+    # Prune generated files that are no longer backed by a skill.
+    for stale in old_owned - set(new_owned):
+        with contextlib.suppress(FileNotFoundError):
+            (command_dir / stale).unlink()
+
+    _write_generated_manifest(manifest_path, new_owned)
+
+
+# ---------------------------------------------------------------------------
+# Modes bridge: /v1/modes -> opencode primary-agent files
+# ---------------------------------------------------------------------------
+
+# Sidecar manifest that records which agent files THIS launcher generated. Kept
+# separate from the skills/commands manifest so the two bridges reconcile
+# independently. Lives next to the agent dir (in its parent scope dir).
+GENERATED_AGENTS_MANIFEST = ".amplifier-generated-agents.json"
+
+# Prefix applied to every generated agent FILENAME so amplifier modes never
+# collide with opencode's native agents (e.g. ``build``). Filenames are held to a
+# safe charset, so the prefix form is used here rather than the display form. The
+# prefix is an opencode-layer concern only; amplifier-agent deals in the bare mode
+# name.
+MODE_AGENT_PREFIX = "amplifier-"
+
+# Suffix that qualifies a mode's DISPLAY name, e.g. ``plan (Amplifier)``. Emitted
+# as the frontmatter ``name`` field, which opencode spreads over its
+# filename-derived default (see opencode ``config/agent.ts``). opencode gives an
+# agent a single ``name`` that serves as config key, "Select agent" picker entry,
+# and (title-cased) status-line label -- there is no separate display field -- so
+# this suffix is what the user sees everywhere.
+MODE_AGENT_DISPLAY_SUFFIX = " (Amplifier)"
+
+
+def mode_display_name(name: str) -> str:
+    """Return the user-visible opencode agent name for mode ``name``."""
+    return f"{name}{MODE_AGENT_DISPLAY_SUFFIX}"
+
+
+def fetch_modes(base_url: str, api_key: str) -> list[dict[str, Any]]:
+    """Return the shipped modes from amplifier-agent's /v1/modes.
+
+    Mirrors :func:`fetch_skills` (bearer auth + ``data`` extraction) but is
+    strictly best-effort: on ANY error (network failure, non-200, malformed
+    JSON, missing/oddly-shaped ``data``) it returns an empty list and never
+    raises. Modes are an optional enhancement; they must never block launch.
+
+    Unlike skills there is no server-side filter -- /v1/modes already returns
+    exactly the modes we want to surface (all shipped/discovered modes).
+
+    Names are validated by the same shared :func:`_usable_bridge_rows` the skills
+    bridge uses, so the two faces cannot drift on what they accept. A mode's name is
+    a ``.md`` file stem server-side, so it cannot contain ``/`` on POSIX -- but it CAN
+    be ``..`` or contain a backslash (which traverses on Windows), and
+    ``MODE_AGENT_PREFIX`` offers no protection since ``amplifier-../../evil`` still
+    resolves through the ``..`` segments.
+
+    Every surviving row is passed through :func:`_normalized_bridge_row`, so callers can
+    rely on ``source`` being a ``str`` and ``shadowed`` being a list of
+    ``{"source": str}`` regardless of what the (separately-versioned) server sent.
+    """
+    try:
+        r = httpx.get(
+            f"{base_url.rstrip('/')}/modes",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15.0,
+        )
+        r.raise_for_status()
+        body = r.json()
+    except Exception:
+        return []
+    if not isinstance(body, dict):
+        return []
+    data = body.get("data", [])
+    if not isinstance(data, list):
+        return []
+    # Keep only well-formed rows that at least carry a usable name.
+    return [
+        _normalized_bridge_row(m)
+        for m in data
+        if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]
+    ]
+
+
+def resolve_agent_dir(project_dir: Path | None) -> Path:
+    """Return the opencode agent dir for the same scope as the provider config.
+
+    Matches how ``_run_launch`` chooses the provider-config path:
+      * ``project_dir`` given -> ``<project>/.opencode/agent/``
+      * otherwise             -> ``~/.config/opencode/agent/``
+    """
+    if project_dir is None:
+        return GLOBAL_OPENCODE_DIR / "agent"
+    return project_dir / ".opencode" / "agent"
+
+
+def write_agent_files(
+    modes: list[dict[str, Any]],
+    agent_dir: Path,
+) -> None:
+    """Materialise one opencode primary-agent file per mode, with reconciliation.
+
+    Each mode ``{name, description}`` becomes
+    ``{agent_dir}/amplifier-{name}.md``::
+
+        ---
+        mode: primary
+        description: "<mode description>"
+        ---
+        Amplifier mode "<name>". Behaviour is applied server-side by amplifier-agent.
+
+        [amplifier-agent:mode=<name>]
+
+    The agent deliberately has NO ``model`` field. It inherits the session's
+    current model, so opencode never rejects the agent with "configured model ...
+    is not valid" and never lists a synthetic mode model in its ``/models`` picker.
+
+    The mode is signalled to amplifier-agent by the ``[amplifier-agent:mode=<name>]``
+    directive in the body. opencode forwards a primary agent's prompt (this body)
+    to the backend as a system message every turn, and amplifier-agent recovers the
+    active mode from that directive (see routes/chat_completions.py
+    ``_detect_mode_from_messages``). No model alias is involved. Because opencode
+    re-sends the active agent's prompt each turn, mode persistence is free.
+
+    Ownership is tracked in a sidecar manifest at
+    ``{agent_dir.parent}/.amplifier-generated-agents.json``. On each run we:
+      * (re)write a file for every current mode and record it in the new manifest,
+      * delete files listed in the OLD manifest whose mode no longer exists,
+      * skip -- with a warning -- any target that already exists but is NOT in the
+        old manifest (a user's own agent is never overwritten).
+    """
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = agent_dir.parent / GENERATED_AGENTS_MANIFEST
+    old_owned = set(_read_generated_manifest(manifest_path, key="agents"))
+
+    new_owned: list[str] = []
+    for mode in modes:
+        name = mode.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        filename = f"{MODE_AGENT_PREFIX}{name}.md"
+        target = agent_dir / filename
+
+        # Two modes in THIS run can map to the same filename (two rows carrying the
+        # same name -- e.g. a server that stopped de-duplicating). Without this the
+        # second write silently clobbers the first and the manifest lists the file
+        # twice. First wins, matching the agent's own first-match-wins discipline.
+        if filename in new_owned:
+            click.secho(
+                f"      modes: skipping duplicate {filename} -- more than one mode is "
+                f"named {name!r} in this run (keeping the first)",
+                fg="yellow",
+            )
+            continue
+
+        # Never overwrite a user's own agent file: it exists but we didn't
+        # generate it (not in the previous run's manifest).
+        if target.exists() and filename not in old_owned:
+            click.secho(
+                f"      modes: skipping {target.name} -- exists and was not "
+                "generated by amplifier-opencode (leaving your agent untouched)",
+                fg="yellow",
+            )
+            continue
+
+        description = mode.get("description", "")
+        if not isinstance(description, str):
+            description = str(description)
+        # No ``model`` field: the agent inherits the session's current model, so
+        # opencode never rejects it as invalid and never lists a synthetic mode
+        # model in its picker. The mode is signalled to amplifier-agent by the
+        # ``[amplifier-agent:mode=<name>]`` directive in the body, which opencode
+        # forwards as a system message each turn (see amplifier-agent
+        # routes/chat_completions.py ``_detect_mode_from_messages``).
+        content = (
+            "---\n"
+            "mode: primary\n"
+            f"name: {json.dumps(mode_display_name(name))}\n"
+            f"description: {json.dumps(description)}\n"
+            "---\n"
+            f"Amplifier mode {json.dumps(name)}. "
+            "Behaviour is applied server-side by amplifier-agent.\n"
+            f"\n[amplifier-agent:mode={name}]\n"
+        )
+        _atomic_write_text(target, content)
+        new_owned.append(filename)
+
+    # Prune generated files that are no longer backed by a mode.
+    for stale in old_owned - set(new_owned):
+        with contextlib.suppress(FileNotFoundError):
+            (agent_dir / stale).unlink()
+
+    _write_generated_manifest(manifest_path, new_owned, key="agents")
 
 
 # ---------------------------------------------------------------------------
@@ -616,6 +1143,7 @@ def _run_launch(
             host_config=host_config,
             api_key=api_key,
             binary=str(amplifier_agent_bin) if amplifier_agent_bin else None,
+            cwd=launch_dir,
         )
         if not wait_for_server_ready(base_url, api_key):
             raise click.ClickException(
@@ -662,6 +1190,48 @@ def _run_launch(
     config_path = write_opencode_config(config_path, provider_block, provider_id=provider_id)
     scope = "global" if project_dir is None else "project"
     click.secho(f"[3/4] Wrote {config_path}  ({scope} config)", fg="green")
+
+    # Step 3b: bridge user-invocable skills into opencode /commands ----------
+    # Best-effort: fetch /v1/skills and materialise a command file per skill in
+    # the same scope as the provider config. Any failure is logged and must
+    # NEVER block the launch/exec path.
+    try:
+        command_dir = resolve_command_dir(project_dir)
+        skills = fetch_skills(base_url, api_key)
+        write_command_files(skills, command_dir)
+        if skills:
+            click.secho(
+                f"      Bridged {len(skills)} skill command(s) into {command_dir}",
+                fg="green",
+            )
+        # Surface any same-name collisions the agent resolved for us. Silent when clean.
+        render_bridge_conflicts("skills", skills)
+    except Exception as exc:  # skills are optional, never fatal
+        click.secho(
+            f"      WARNING: skills bridge failed ({exc}); continuing without commands.",
+            fg="yellow",
+        )
+
+    # Step 3c: bridge modes into opencode primary agents ---------------------
+    # Best-effort: fetch /v1/modes and materialise an ``amplifier-<mode>``
+    # primary-agent file per mode in the same scope as the provider config. Any
+    # failure is logged and must NEVER block the launch/exec path.
+    try:
+        agent_dir = resolve_agent_dir(project_dir)
+        modes = fetch_modes(base_url, api_key)
+        write_agent_files(modes, agent_dir)
+        if modes:
+            click.secho(
+                f"      Bridged {len(modes)} mode(s) into {agent_dir}",
+                fg="green",
+            )
+        # Surface any same-name collisions the agent resolved for us. Silent when clean.
+        render_bridge_conflicts("modes", modes)
+    except Exception as exc:  # modes are optional, never fatal
+        click.secho(
+            f"      WARNING: modes bridge failed ({exc}); continuing without mode agents.",
+            fg="yellow",
+        )
 
     # Step 4: exec opencode --------------------------------------------------
     if no_launch:

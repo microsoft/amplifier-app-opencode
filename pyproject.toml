@@ -1,6 +1,6 @@
 [project]
 name = "amplifier-app-opencode"
-version = "0.1.3"
+version = "0.2.0"
 description = "Launch the opencode TUI with auto-discovered amplifier-agent models — checks/starts the chat-completions server, queries /v1/models, writes opencode.json, exec's opencode."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,6 +13,20 @@ dependencies = [
 
 [project.scripts]
 amplifier-opencode = "amplifier_app_opencode.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4",
+  # AI-user judge. Uses Anthropic native structured outputs (output_config.format),
+  # which is GA in recent SDKs; pinned to a version verified to support it. judge.py
+  # falls back to httpx (a runtime dep) when `anthropic` is not importable.
+  "anthropic>=0.117",
+]
+
+[tool.pytest.ini_options]
+markers = [
+  "dtu: DTU-based end-to-end tests requiring amplifier-digital-twin",
+]
 
 [build-system]
 requires = ["hatchling"]

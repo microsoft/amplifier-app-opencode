@@ -1,0 +1,51 @@
+# amplifier-app-opencode e2e DTU profile.
+#
+# Everything about HOW the opencode stack is installed lives in
+# install-opencode-stack.sh, not in this profile body, so the install story can change
+# without touching the profile.
+#
+# Vars (supplied at launch via --var):
+#   OC_E2E_BASE_IMAGE  container image (default ubuntu:24.04)
+#   GITEA_URL          local Gitea mirror URL (set by dtu_manager.mirror_local_repos)
+#   GITEA_TOKEN        Gitea admin token (activates the url_rewrites auth below)
+#
+# By DEFAULT the harness passes GITEA_URL / GITEA_TOKEN, which activates the url_rewrites
+# below so the GitHub install URLs in install-opencode-stack.sh resolve to the LOCAL
+# working-tree mirror. Set OC_E2E_PUBLISHED=1 on the host to skip the mirror; then these
+# vars are empty and the installs hit upstream GitHub instead.
+
+base:
+  image: "${OC_E2E_BASE_IMAGE}"
+
+passthrough:
+  services:
+    # The provider is standardized on ANTHROPIC_API_KEY; passed into the DTU so
+    # amplifier-agent's server can enumerate models and answer chat completions.
+    - { name: anthropic, key_env: ANTHROPIC_API_KEY }
+
+# Local multi-repo Gitea mirror. Redirects the `uv tool install --from git+github.com/...`
+# lines in install-opencode-stack.sh to the local mirror so both tools install from the
+# developer's LOCAL working trees. Active only when GITEA_URL / GITEA_TOKEN are passed.
+url_rewrites:
+  auth: { username: admin, token_var: GITEA_TOKEN }
+  default_match_mode: boundary
+  rules:
+    - { match: github.com/microsoft/amplifier-agent, target: "${GITEA_URL}/admin/amplifier-agent" }
+    - { match: github.com/microsoft/amplifier-app-opencode, target: "${GITEA_URL}/admin/amplifier-app-opencode" }
+
+provision:
+  files:
+    - { src: ./dtu/install-opencode-stack.sh, dest: /root/e2e/install-opencode-stack.sh }
+  setup_cmds:
+    - "bash /root/e2e/install-opencode-stack.sh"
+
+update:
+  # Top-level key; powers `refresh`. Re-runs the install in place.
+  cmds:
+    - "bash /root/e2e/install-opencode-stack.sh"
+
+readiness:
+  - { name: opencode-installed, command: "amplifier-opencode doctor" }
+
+access:
+  hostname: opencode-e2e

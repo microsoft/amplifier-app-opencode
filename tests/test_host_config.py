@@ -151,7 +151,7 @@ def test_launch_passes_no_config_when_no_flag_given(
 
     captured: list[Path | None] = []
 
-    def mock_start(*, port, workspace, host_config, api_key, binary):
+    def mock_start(*, port, workspace, host_config, api_key, binary, cwd=None):
         captured.append(host_config)
         return _make_mock_proc()
 
@@ -179,7 +179,7 @@ def test_launch_uses_user_config_when_flag_given(
 
     captured: list[Path | None] = []
 
-    def mock_start(*, port, workspace, host_config, api_key, binary):
+    def mock_start(*, port, workspace, host_config, api_key, binary, cwd=None):
         captured.append(host_config)
         return _make_mock_proc()
 

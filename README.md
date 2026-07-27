@@ -33,6 +33,10 @@ This adapter wires the two together so you don't have to.
   background if it isn't already running
 - **Drop-in opencode:** `/models`, `/connect`, and all slash commands work normally
 - **Built-in `doctor`:** diagnoses any setup issue in one command
+- **Skills as commands:** amplifier-agent skills show up as opencode slash commands,
+  no extra setup
+- **Modes as agents:** amplifier-agent modes show up as opencode agents
+  (`<mode> (Amplifier)`)
 
 ---
 
@@ -101,12 +105,35 @@ configured. Once everything's healthy you'll see something like:
       - anthropic   claude-opus-4-8                      Claude Opus 4.8
       - anthropic   claude-sonnet-4-6                    Claude Sonnet 4.6
 [3/4] Wrote /Users/you/.config/opencode/opencode.jsonc  (global config)
+      Bridged 5 skill command(s) into /Users/you/.config/opencode/command
+      Bridged 2 mode(s) into /Users/you/.config/opencode/agent
 [4/4] Configuration complete.
 ```
 
 opencode opens with the model picker under the **Amplifier** section. Pick a
 model and start coding. The config is global, so it applies from every
 directory — and it's re-synced on every run.
+
+---
+
+## Skills and modes in opencode
+
+Every launch also bridges amplifier-agent's skills and modes into opencode:
+
+- **Skills become slash commands.** Each user-invocable skill becomes a `/<name>`
+  command that runs the skill server-side in amplifier-agent.
+- **Modes become agents.** Each mode becomes a selectable opencode agent, shown as
+  `<mode> (Amplifier)` in the agent picker (e.g. `plan (Amplifier)`).
+
+Files are written next to your opencode config: `~/.config/opencode/command/` and
+`~/.config/opencode/agent/` globally, or `<project>/.opencode/command/` and
+`<project>/.opencode/agent/` with `--project-dir`.
+
+amplifier-opencode only manages the files it generated (tracked in
+`.amplifier-generated-commands.json` / `.amplifier-generated-agents.json` next to
+each dir). A command or agent file you wrote yourself is never overwritten; it's
+skipped with a warning. Name conflicts (a skill or mode name found in more than one
+place) are also reported at launch, showing which file runs and which are shadowed.
 
 ---
 
@@ -136,6 +163,7 @@ Run `amplifier-opencode doctor` to see which providers will actually be served.
 |---|---|
 | `amplifier-opencode launch` | Set up the bridge **and** open the opencode TUI |
 | `amplifier-opencode` | Refresh the bridge only (re-discover models, rewrite config) — no launch |
+| `amplifier-opencode prepare` | Same as the default; explicit form for scripts |
 | `amplifier-opencode setup` | Install/heal the stack and connect a provider, without launching |
 | `amplifier-opencode update` | Update amplifier-opencode, amplifier-agent, and opencode |
 | `amplifier-opencode doctor` | Diagnose every prerequisite in one shot |
@@ -163,6 +191,8 @@ amplifier-opencode update --no-opencode  # update the Amplifier pieces, keep ope
   Pass-through args after `--` go to opencode.
 - **`amplifier-opencode`** (no subcommand) — set up / refresh the bridge without
   launching.
+- **`amplifier-opencode prepare`**: same as running with no subcommand; explicit
+  form for clarity in scripts.
 - **`amplifier-opencode setup`** — install and heal the stack and connect a
   provider; no launch. Add `--yes` for non-interactive installs.
 - **`amplifier-opencode update`** — update all three components (`--no-opencode`
@@ -250,7 +280,7 @@ Why: `git` is required because amplifier-agent and amplifier-app-opencode are
 installed via `git+https://...` URLs (neither is on PyPI yet). `curl` is
 required by the uv and opencode one-line installers.
 
-#### 1. amplifier-agent — the backend server (>= 0.9.1 required)
+#### 1. amplifier-agent — the backend server (>= 0.10.0 required)
 
 `amplifier-agent` is the OpenAI-compatible HTTP server this adapter talks to.
 Use the official one-line installer — it pulls the latest released binary and
@@ -259,22 +289,23 @@ primes the bundle cache so the first run is instant:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash
 
-# to pin a specific version instead of latest (must be >= 0.9.1, the floor
+# to pin a specific version instead of latest (must be >= 0.10.0, the floor
 # amplifier-opencode enforces):
-#   curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash -s -- --tag v0.9.1
+#   curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash -s -- --tag v0.10.0
 
 # ensure ~/.local/bin is on PATH, then verify:
-amplifier-agent version --json   # → {"version":"0.9.1","protocolVersion":"0.3.0"}
+amplifier-agent version --json   # → {"version":"0.10.0","protocolVersion":"0.3.0"}
 ```
 
 The installer needs [`uv`](https://docs.astral.sh/uv/) and `curl` on PATH and
 will tell you exactly what to install if either is missing — it will not
 bootstrap them silently.
 
-> **Version requirement: `amplifier-agent >= 0.9.1` is mandatory.** Older
+> **Version requirement: `amplifier-agent >= 0.10.0` is mandatory.** Older
 > versions lack the pieces amplifier-opencode depends on (the `serve
-> chat-completions` HTTP face, multi-provider routing, and the `auth`
-> subcommand). If you use the one-command install, amplifier-opencode detects a
+> chat-completions` HTTP face, multi-provider routing, the `auth` subcommand,
+> and the `/v1/skills` and `/v1/modes` routes the skills and modes bridges
+> read). If you use the one-command install, amplifier-opencode detects a
 > too-old amplifier-agent and force-updates it for you; if you're installing by
 > hand and see an older version, upgrade with `amplifier-agent update` and
 > re-run `amplifier-opencode doctor` to confirm.
@@ -374,6 +405,7 @@ amplifier-opencode [GLOBAL OPTIONS] [SUBCOMMAND] [SUBCOMMAND OPTIONS]
 | `--api-key` | `AMPLIFIER_AGENT_API_KEY` | `local-dev-secret` | wire-level bearer token |
 | `--yes` | — | false | Assume "yes" to all prompts (install/heal without asking). For CI and non-interactive shells. |
 | `--no-bootstrap` | — | false | Skip the self-healing preflight; assume amplifier-agent and opencode are already installed. |
+| `--version` | n/a | false | Show amplifier-opencode's version plus the installed and required minimum amplifier-agent version, then exit |
 
 #### `launch` (default)
 
@@ -446,6 +478,15 @@ The generated config lives in `./opencode.json`. opencode walks up from cwd to
 find it.
 
 </details>
+
+---
+
+## Testing
+
+End-to-end tests drive the real opencode TUI inside an isolated DTU container and verify
+the full `amplifier-opencode -> opencode -> amplifier-agent` path. See
+[docs/E2E_TESTING.md](docs/E2E_TESTING.md) for how the framework works and how to run and
+add tests.
 
 ---
 

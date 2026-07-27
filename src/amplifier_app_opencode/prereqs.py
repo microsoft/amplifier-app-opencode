@@ -52,12 +52,14 @@ OPENCODE_BIN = "opencode"
 OPENCODE_INSTALL_SH = "https://opencode.ai/install"
 OPENCODE_NPM_PACKAGE = "opencode-ai"
 
-# Minimum amplifier-agent version amplifier-opencode requires. >= 0.9.3
-# is the first version that ships `auth set --stdin`, which onboarding uses to
-# hand the provider key to the agent off-argv. Earlier builds (incl. 0.9.1/0.9.2,
-# which added credential resolution in #82) lack the flag, so the floor forces
-# ensure_agent to heal stale installs before the stdin path runs.
-MIN_AGENT_VERSION = "0.9.3"
+# Minimum amplifier-agent version amplifier-opencode requires. >= 0.10.0 is the
+# first version that ships `GET /v1/skills` and `GET /v1/modes`, which the skills
+# and modes bridges read to materialise opencode commands and primary agents.
+# Against an older agent both fetches 404 and the bridges silently produce
+# nothing, so the floor forces ensure_agent to heal stale installs first.
+# (0.9.3 remains the floor for `auth set --stdin`, which onboarding uses to hand
+# the provider key to the agent off-argv; 0.10.0 subsumes it.)
+MIN_AGENT_VERSION = "0.10.0"
 # The silent, launch-time auto-install/self-heal targets this exact known-good
 # git tag rather than a moving branch, so a reliability tool never drags users
 # onto un-vetted ``main``. Kept in lockstep with MIN_AGENT_VERSION: to adopt a
