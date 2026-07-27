@@ -566,11 +566,13 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
-def _read_generated_manifest(manifest_path: Path) -> list[str]:
-    """Return the list of command filenames a previous run generated.
+def _read_generated_manifest(manifest_path: Path, key: str = "commands") -> list[str]:
+    """Return the list of filenames a previous run generated.
 
     Best-effort: a missing or corrupt manifest yields an empty list (we simply
-    treat every existing file as unowned and never clobber it).
+    treat every existing file as unowned and never clobber it). ``key`` selects
+    the manifest field (``commands`` for the skills bridge, ``agents`` for the
+    modes bridge) so the two bridges keep independent ownership manifests.
     """
     if not manifest_path.exists():
         return []
@@ -578,15 +580,15 @@ def _read_generated_manifest(manifest_path: Path) -> list[str]:
         loaded = json.loads(manifest_path.read_text(encoding="utf-8") or "{}")
     except (json.JSONDecodeError, OSError):
         return []
-    commands = loaded.get("commands", []) if isinstance(loaded, dict) else loaded
-    if not isinstance(commands, list):
+    items = loaded.get(key, []) if isinstance(loaded, dict) else loaded
+    if not isinstance(items, list):
         return []
-    return [c for c in commands if isinstance(c, str)]
+    return [c for c in items if isinstance(c, str)]
 
 
-def _write_generated_manifest(manifest_path: Path, commands: list[str]) -> None:
-    """Persist the ownership manifest atomically."""
-    payload = json.dumps({"commands": sorted(commands)}, indent=2) + "\n"
+def _write_generated_manifest(manifest_path: Path, items: list[str], key: str = "commands") -> None:
+    """Persist the ownership manifest atomically under ``key``."""
+    payload = json.dumps({key: sorted(items)}, indent=2) + "\n"
     _atomic_write_text(manifest_path, payload)
 
 
@@ -652,6 +654,149 @@ def write_command_files(skills: list[dict[str, Any]], command_dir: Path) -> None
             (command_dir / stale).unlink()
 
     _write_generated_manifest(manifest_path, new_owned)
+
+
+# ---------------------------------------------------------------------------
+# Modes bridge: /v1/modes -> opencode primary-agent files
+# ---------------------------------------------------------------------------
+
+# Sidecar manifest that records which agent files THIS launcher generated. Kept
+# separate from the skills/commands manifest so the two bridges reconcile
+# independently. Lives next to the agent dir (in its parent scope dir).
+GENERATED_AGENTS_MANIFEST = ".amplifier-generated-agents.json"
+
+# Prefix applied to every generated agent so amplifier modes never collide with
+# opencode's native agents (e.g. ``build``). The prefix is an opencode-layer
+# concern only; amplifier-agent deals in the bare mode name.
+MODE_AGENT_PREFIX = "amplifier-"
+
+
+def fetch_modes(base_url: str, api_key: str) -> list[dict[str, Any]]:
+    """Return the shipped modes from amplifier-agent's /v1/modes.
+
+    Mirrors :func:`fetch_skills` (bearer auth + ``data`` extraction) but is
+    strictly best-effort: on ANY error (network failure, non-200, malformed
+    JSON, missing/oddly-shaped ``data``) it returns an empty list and never
+    raises. Modes are an optional enhancement; they must never block launch.
+
+    Unlike skills there is no server-side filter -- /v1/modes already returns
+    exactly the modes we want to surface (all shipped/discovered modes).
+    """
+    try:
+        r = httpx.get(
+            f"{base_url.rstrip('/')}/modes",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15.0,
+        )
+        r.raise_for_status()
+        body = r.json()
+    except Exception:
+        return []
+    if not isinstance(body, dict):
+        return []
+    data = body.get("data", [])
+    if not isinstance(data, list):
+        return []
+    # Keep only well-formed rows that at least carry a usable name.
+    return [m for m in data if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]]
+
+
+def resolve_agent_dir(project_dir: Path | None) -> Path:
+    """Return the opencode agent dir for the same scope as the provider config.
+
+    Matches how ``_run_launch`` chooses the provider-config path:
+      * ``project_dir`` given -> ``<project>/.opencode/agent/``
+      * otherwise             -> ``~/.config/opencode/agent/``
+    """
+    if project_dir is None:
+        return GLOBAL_OPENCODE_DIR / "agent"
+    return project_dir / ".opencode" / "agent"
+
+
+def write_agent_files(
+    modes: list[dict[str, Any]],
+    agent_dir: Path,
+) -> None:
+    """Materialise one opencode primary-agent file per mode, with reconciliation.
+
+    Each mode ``{name, description}`` becomes
+    ``{agent_dir}/amplifier-{name}.md``::
+
+        ---
+        mode: primary
+        description: "<mode description>"
+        ---
+        Amplifier mode "<name>". Behaviour is applied server-side by amplifier-agent.
+
+        [amplifier-agent:mode=<name>]
+
+    The agent deliberately has NO ``model`` field. It inherits the session's
+    current model, so opencode never rejects the agent with "configured model ...
+    is not valid" and never lists a synthetic mode model in its ``/models`` picker.
+
+    The mode is signalled to amplifier-agent by the ``[amplifier-agent:mode=<name>]``
+    directive in the body. opencode forwards a primary agent's prompt (this body)
+    to the backend as a system message every turn, and amplifier-agent recovers the
+    active mode from that directive (see routes/chat_completions.py
+    ``_detect_mode_from_messages``). No model alias is involved. Because opencode
+    re-sends the active agent's prompt each turn, mode persistence is free.
+
+    Ownership is tracked in a sidecar manifest at
+    ``{agent_dir.parent}/.amplifier-generated-agents.json``. On each run we:
+      * (re)write a file for every current mode and record it in the new manifest,
+      * delete files listed in the OLD manifest whose mode no longer exists,
+      * skip -- with a warning -- any target that already exists but is NOT in the
+        old manifest (a user's own agent is never overwritten).
+    """
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = agent_dir.parent / GENERATED_AGENTS_MANIFEST
+    old_owned = set(_read_generated_manifest(manifest_path, key="agents"))
+
+    new_owned: list[str] = []
+    for mode in modes:
+        name = mode.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        filename = f"{MODE_AGENT_PREFIX}{name}.md"
+        target = agent_dir / filename
+
+        # Never overwrite a user's own agent file: it exists but we didn't
+        # generate it (not in the previous run's manifest).
+        if target.exists() and filename not in old_owned:
+            click.secho(
+                f"      modes: skipping {target.name} -- exists and was not "
+                "generated by amplifier-opencode (leaving your agent untouched)",
+                fg="yellow",
+            )
+            continue
+
+        description = mode.get("description", "")
+        if not isinstance(description, str):
+            description = str(description)
+        # No ``model`` field: the agent inherits the session's current model, so
+        # opencode never rejects it as invalid and never lists a synthetic mode
+        # model in its picker. The mode is signalled to amplifier-agent by the
+        # ``[amplifier-agent:mode=<name>]`` directive in the body, which opencode
+        # forwards as a system message each turn (see amplifier-agent
+        # routes/chat_completions.py ``_detect_mode_from_messages``).
+        content = (
+            "---\n"
+            "mode: primary\n"
+            f"description: {json.dumps(description)}\n"
+            "---\n"
+            f"Amplifier mode {json.dumps(name)}. "
+            "Behaviour is applied server-side by amplifier-agent.\n"
+            f"\n[amplifier-agent:mode={name}]\n"
+        )
+        _atomic_write_text(target, content)
+        new_owned.append(filename)
+
+    # Prune generated files that are no longer backed by a mode.
+    for stale in old_owned - set(new_owned):
+        with contextlib.suppress(FileNotFoundError):
+            (agent_dir / stale).unlink()
+
+    _write_generated_manifest(manifest_path, new_owned, key="agents")
 
 
 # ---------------------------------------------------------------------------
@@ -844,6 +989,25 @@ def _run_launch(
     except Exception as exc:  # skills are optional, never fatal
         click.secho(
             f"      WARNING: skills bridge failed ({exc}); continuing without commands.",
+            fg="yellow",
+        )
+
+    # Step 3c: bridge modes into opencode primary agents ---------------------
+    # Best-effort: fetch /v1/modes and materialise an ``amplifier-<mode>``
+    # primary-agent file per mode in the same scope as the provider config. Any
+    # failure is logged and must NEVER block the launch/exec path.
+    try:
+        agent_dir = resolve_agent_dir(project_dir)
+        modes = fetch_modes(base_url, api_key)
+        write_agent_files(modes, agent_dir)
+        if modes:
+            click.secho(
+                f"      Bridged {len(modes)} mode(s) into {agent_dir}",
+                fg="green",
+            )
+    except Exception as exc:  # modes are optional, never fatal
+        click.secho(
+            f"      WARNING: modes bridge failed ({exc}); continuing without mode agents.",
             fg="yellow",
         )
 

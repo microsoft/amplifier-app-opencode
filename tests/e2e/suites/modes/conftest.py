@@ -19,8 +19,11 @@ for the opencode agent identity, so ``e2e-proj`` -> agent ``amplifier-e2e-proj``
 
 from __future__ import annotations
 
+import json
 import shlex
 import tempfile
+import time
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -63,32 +66,136 @@ def _seed_mode(dtu_id: str, name: str, dest: str) -> None:
     dtu.file_push(dtu_id, local_path, dest)
 
 
-@pytest.fixture
-def seeded_mode_dirs(dtu_id: str) -> dict[str, str]:
-    """Seed a probe mode into each amplifier mode dir; return ``{source_key: mode_name}``.
+# amplifier-agent mode discovery (and the ``mode-<name>`` model aliases the launcher turns
+# into ``amplifier-<name>`` agents) is captured ONCE, at server startup. Two independent
+# hazards make a naive launch flaky:
+#   1. STALENESS -- a warm DTU reuses a single amplifier-agent across suites, so a server that
+#      started before this suite seeded its modes never sees them.
+#   2. COLD START -- the very first launch on a freshly-provisioned DTU installs provider
+#      modules (~1-2 min); if the launcher's readiness wait is out-raced, its ``GET /v1/modes``
+#      fetch comes back empty and no ``amplifier-<name>`` agent files get written for the early
+#      tests.
+# The module-scoped ``_warm_modes_server`` fixture defeats both: it seeds the modes, stops any
+# stale server, starts a FRESH one headlessly (``--no-launch``) so it discovers the just-seeded
+# modes, then polls ``GET /v1/modes`` until every expected mode is present. Only then do the
+# per-test ``opencode_session`` launches run -- against a warm, correct server.
 
-    Runs before the TUI launches (ordered ahead of ``opencode_session`` in ``modes_session``)
-    so the launcher's ``GET /v1/modes`` fetch sees the freshly-seeded modes.
+# The api key the e2e launcher/serve uses inside the DTU (see the provisioning stack).
+_AGENT_API_KEY = "local-dev-secret"
+_AGENT_MODES_URL = "http://127.0.0.1:9099/v1/modes"
+# Bare mode names every launch of this suite must surface (built-ins + both seeded probes).
+_EXPECTED_MODES = {"plan", "brainstorm", "e2e-proj", "e2e-user"}
+# tmux session the headless warmup launch runs under, so it survives the exec that starts it.
+_WARM_TMUX = "oc-e2e-modes-warm"
+# Cold provider install on a fresh DTU can be slow; give the warmup a generous ceiling.
+_WARMUP_TIMEOUT_S = 300.0
 
-    LIMITATION (amplifier_project): the project mode is discovered relative to the
-    amplifier-agent server's working directory. It is only found if the launched server runs
-    with cwd == PROJECT_DIR (the launcher passes ``--project-dir {PROJECT_DIR}``). The user
-    mode (/root/.amplifier/modes/) is an absolute path and is always discovered.
+
+def _discovered_modes(dtu_id: str) -> set[str]:
+    """Return the bare mode names ``GET /v1/modes`` currently reports (empty on any error)."""
+    res = dtu.exec_json(
+        dtu_id,
+        [
+            "bash",
+            "-lc",
+            f"curl -s --max-time 5 -H {shlex.quote('Authorization: Bearer ' + _AGENT_API_KEY)} "
+            f"{shlex.quote(_AGENT_MODES_URL)}",
+        ],
+    )
+    try:
+        data = json.loads(res.get("stdout", "") or "{}").get("data", [])
+    except (json.JSONDecodeError, TypeError):
+        return set()
+    return {m["name"] for m in data if isinstance(m, dict) and isinstance(m.get("name"), str)}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _warm_modes_server(dtu_id: str) -> Generator[None, None, None]:
+    """Seed the probe modes, then guarantee a warm amplifier-agent that has discovered them.
+
+    Runs once per module, before any ``opencode_session`` is set up (module scope precedes the
+    function-scoped session fixture). Steps:
+      1. Seed each probe ``<name>.md`` into its amplifier mode dir.
+      2. Stop any warm/stale server so the fresh one starts AFTER the seeds exist.
+      3. Start a fresh server headlessly via ``amplifier-opencode launch --no-launch`` (under
+         tmux so it outlives the exec), with cwd == PROJECT_DIR so the project mode is found.
+      4. Poll ``GET /v1/modes`` until every expected mode is present (fail loud on timeout).
     """
-    seeded: dict[str, str] = {}
-    for source_key, (name, dest) in _SEED_MAP.items():
+    # Rebind PROJECT_DIR through an f-string so its static type is a plain str: the dynamic
+    # ``from conftest import PROJECT_DIR`` confuses the type checker into treating it as the
+    # conftest module (same idiom the skills suite uses).
+    project_dir = f"{PROJECT_DIR}"
+
+    for name, dest in _SEED_MAP.values():
         _seed_mode(dtu_id, name, dest)
-        seeded[source_key] = name
-    return seeded
+
+    dtu.exec_json(
+        dtu_id,
+        [
+            "bash",
+            "-lc",
+            "pkill -f 'amplifier-agent serve' 2>/dev/null || true; "
+            "for _ in $(seq 1 40); do pgrep -f 'amplifier-agent serve' >/dev/null || break; "
+            "sleep 0.5; done",
+        ],
+    )
+
+    launch = (
+        f"cd {shlex.quote(project_dir)} && "
+        f"amplifier-opencode launch --project-dir {shlex.quote(project_dir)} --no-launch "
+        "> /tmp/modes-warm.log 2>&1"
+    )
+    dtu.exec_json(
+        dtu_id,
+        [
+            "bash",
+            "-lc",
+            f"tmux kill-session -t {_WARM_TMUX} 2>/dev/null || true; "
+            f"tmux new-session -d -s {_WARM_TMUX} {shlex.quote(launch)}",
+        ],
+    )
+
+    deadline = time.monotonic() + _WARMUP_TIMEOUT_S
+    discovered: set[str] = set()
+    ready = False
+    while time.monotonic() < deadline:
+        discovered = _discovered_modes(dtu_id)
+        if _EXPECTED_MODES.issubset(discovered):
+            ready = True
+            break
+        time.sleep(3.0)
+
+    if not ready:
+        log_tail = dtu.exec_json(
+            dtu_id, ["bash", "-lc", "tail -60 /tmp/modes-warm.log 2>/dev/null"]
+        ).get("stdout", "")
+        missing = _EXPECTED_MODES - discovered
+        raise RuntimeError(
+            f"amplifier-agent did not report modes {sorted(missing)} within "
+            f"{_WARMUP_TIMEOUT_S:.0f}s (saw {sorted(discovered)}).\n--- warmup log ---\n{log_tail}"
+        )
+
+    yield
+
+    # Leave a clean slate for any later suite (e.g. skills) whose own launch must start a
+    # server configured with ITS overrides: stop the modes-warmed server we started here.
+    dtu.exec_json(
+        dtu_id,
+        [
+            "bash",
+            "-lc",
+            f"tmux kill-session -t {_WARM_TMUX} 2>/dev/null || true; "
+            "pkill -f 'amplifier-agent serve' 2>/dev/null || true",
+        ],
+    )
 
 
 @pytest.fixture
-def modes_session(seeded_mode_dirs, opencode_session):
-    """The live TUI driver, with probe modes seeded pre-launch.
+def modes_session(_warm_modes_server: None, opencode_session):
+    """The live TUI driver, launched against the pre-warmed, modes-aware amplifier-agent.
 
-    Fixture params are ordered deliberately: pytest sets up same-scope independent fixtures in
-    listed order, so ``seeded_mode_dirs`` (writing the mode ``.md`` files) runs BEFORE
-    ``opencode_session`` spawns the opencode TUI/server. That ordering guarantees the modes
-    exist for discovery on startup.
+    ``_warm_modes_server`` (module scope, autouse) has already seeded the modes and warmed a
+    fresh server that discovered them, so this per-test launch reuses that warm server and its
+    ``fetch_modes``/agent-file bridge is fast and complete.
     """
     return opencode_session

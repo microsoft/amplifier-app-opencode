@@ -27,7 +27,7 @@ so a test breaks only if the user-facing behavior breaks.
 
 from __future__ import annotations
 
-from framework.harness import Step, TUICase, send_and_settle
+from framework.harness import Step, TUICase, send_and_settle, setup_select_sonnet5
 
 # Leader (``ctrl+x``) + ``a`` opens opencode's agent list dialog ("Select agent"). Sent as
 # two tmux keys in one step: ``C-x`` (ctrl+x) then ``a``. See opencode keybind.ts
@@ -117,12 +117,21 @@ _DISCOVERY_CASES: list[TUICase] = [
 # --------------------------------------------------------------------------- #
 # Group B -- behavior: selecting a mode changes user-visible behavior
 # --------------------------------------------------------------------------- #
+# Each behavior case first selects an Amplifier model (setup_select_sonnet5), THEN
+# activates a mode agent. This mirrors real usage and is REQUIRED for the mode to
+# apply: mode agents carry no ``model`` field, so they inherit the session's
+# current model. The mode is signalled to amplifier-agent by an
+# ``[amplifier-agent:mode=<name>]`` directive in the agent prompt, which only
+# reaches amplifier-agent when the turn is routed through the Amplifier provider.
+# If the session were on a native (non-Amplifier) model, the turn would bypass
+# amplifier-agent entirely and the mode would silently not apply.
 _BEHAVIOR_CASES: list[TUICase] = [
     # Deterministic activation proof: the probe mode forces a sentinel line. Passes only if
     # selecting the mode-agent actually applied the mode's guidance end-to-end.
     TUICase(
         "activate-probe-mode-sentinel",
         [
+            *setup_select_sonnet5(),
             *_select_agent("amplifier-e2e-user"),
             *send_and_settle("say anything"),
             Step(
@@ -136,6 +145,7 @@ _BEHAVIOR_CASES: list[TUICase] = [
     TUICase(
         "activate-amplifier-plan-persists",
         [
+            *setup_select_sonnet5(),
             *_select_agent("amplifier-plan"),
             *send_and_settle("hello"),
             *send_and_settle("are you still there?"),
@@ -151,6 +161,7 @@ _BEHAVIOR_CASES: list[TUICase] = [
     TUICase(
         "activate-amplifier-plan-behavior",
         [
+            *setup_select_sonnet5(),
             *_select_agent("amplifier-plan"),
             *send_and_settle("implement a hello world Python script and save it to hello.py"),
             Step(
@@ -164,6 +175,7 @@ _BEHAVIOR_CASES: list[TUICase] = [
     TUICase(
         "activate-amplifier-brainstorm-behavior",
         [
+            *setup_select_sonnet5(),
             *_select_agent("amplifier-brainstorm"),
             *send_and_settle("build a URL shortener"),
             Step(
@@ -176,5 +188,104 @@ _BEHAVIOR_CASES: list[TUICase] = [
 ]
 
 
-# Discovery first (fast, no model turn), then behavior (full send/settle round-trips).
-MODES_CASES: list[TUICase] = [*_DISCOVERY_CASES, *_BEHAVIOR_CASES]
+# --------------------------------------------------------------------------- #
+# Group C -- separation: modes are agents, NOT selectable models
+# --------------------------------------------------------------------------- #
+# A mode is a per-turn behavior overlay. Its ONLY user-facing home is the agent
+# ("Select agent", Tab / ctrl+x a) picker as ``amplifier-<name>``. It must NOT
+# leak into opencode's ``/models`` ("Select model") picker.
+#
+# Today amplifier-agent advertises a synthetic ``mode-<name>`` model alias per
+# mode (app.py appends it to ``available_models``, so it rides through
+# ``GET /v1/models`` with ``display_name`` ``"Mode: <name>"``). The launcher
+# copies every /v1/models row into opencode's provider block unfiltered, so the
+# mode currently shows up as a selectable model "Mode: <name>" -- and picking it
+# changes the active model. These cases pin the DESIRED contract: modes are
+# absent from the model picker. They are EXPECTED TO FAIL until the alias is kept
+# out of the model list (server-side: stop appending to ``available_models``;
+# or launcher-side: filter ``mode-*`` ids out of the provider block).
+#
+# The picker filters as you type. We type the bare mode name (``plan`` /
+# ``brainstorm``) -- no genuine LLM model carries that word -- so a correct
+# picker shows "No results found" (or only real models), and the buggy one
+# surfaces "Mode: <name>". The judge is phrased so a YES verdict == the correct
+# (mode-absent) state.
+_MODEL_DIALOG_MARKER = "Select model"
+
+
+def _open_models_picker() -> list[Step]:
+    """Steps to reach the main screen and open the ``/models`` ("Select model") picker."""
+    return [
+        Step("wait", "tab agents", timeout=120.0),
+        Step("send_text", "/models"),
+        Step("send_keys", "Enter"),
+        Step("wait", _MODEL_DIALOG_MARKER),
+    ]
+
+
+_SEPARATION_CASES: list[TUICase] = [
+    # One dual-surface case covering BOTH built-in modes: they must appear in the
+    # agent picker (their correct home) yet be ABSENT from the model picker.
+    TUICase(
+        "modes-in-agents-not-in-models",
+        [
+            # 1. Agent picker: amplifier-plan and amplifier-brainstorm ARE listed.
+            _OPEN_AGENT_LIST,
+            Step("wait", _AGENT_DIALOG_MARKER),
+            Step("wait", "amplifier-plan", timeout=15.0),
+            Step(
+                "judge",
+                "In this agent list ('Select agent'), are BOTH 'amplifier-plan' and "
+                "'amplifier-brainstorm' shown as selectable agents?",
+            ),
+            Step("send_keys", "Escape"),
+            # 2. Model picker: neither mode may appear as a selectable model. Filter by
+            # 'mode' so any leaked 'Mode: plan' / 'Mode: brainstorm' alias is on screen.
+            *_open_models_picker(),
+            Step("send_text", "mode"),
+            Step(
+                "judge",
+                "This is now opencode's MODEL picker ('Select model'), filtered by 'mode'. Is the "
+                "list FREE of amplifier MODE entries -- i.e. there is NO row 'Mode: plan', "
+                "'Mode: brainstorm', 'mode-plan', or 'mode-brainstorm' offered as a selectable "
+                "model? Answer YES if no such mode row appears (only genuine LLM models such as "
+                "Claude/GPT, or 'No results found'). Answer NO if any mode entry like "
+                "'Mode: plan' or 'Mode: brainstorm' appears as a selectable model.",
+            ),
+            Step("send_keys", "Escape"),
+        ],
+    ),
+    # Activating a mode agent must NOT surface an invalid-model error. The mode
+    # agent files declare ``model: amplifier/mode-<name>``; if that alias is not a
+    # model opencode considers valid, opencode rejects the agent with e.g.
+    # "Agent amplifier-plan's configured model amplifier/mode-plan is not valid".
+    # So a mode's model reference must stay RESOLVABLE for opencode even though the
+    # alias must not appear in the /models picker. This case selects amplifier-plan
+    # and asserts no such error. EXPECTED TO FAIL while the alias is hidden from
+    # opencode's model list without being made otherwise valid.
+    TUICase(
+        "mode-activation-no-invalid-model-error",
+        [
+            _OPEN_AGENT_LIST,
+            Step("wait", _AGENT_DIALOG_MARKER),
+            Step("send_text", "amplifier-plan"),
+            Step("send_keys", "Enter"),
+            Step(
+                "judge",
+                "The 'amplifier-plan' agent (an amplifier MODE) was just selected. Is the screen "
+                "FREE of any error about the agent's configured model being invalid? Specifically, "
+                "there must be NO message like \"Agent amplifier-plan's configured model "
+                "amplifier/mode-plan is not valid\", nor any 'model ... is not valid' / "
+                "'invalid model' / 'unknown model' error anywhere on screen. Answer YES if no such "
+                "error is present (the mode activated cleanly). Answer NO if any invalid/not-valid "
+                "model error is shown.",
+            ),
+            Step("send_keys", "Escape"),
+        ],
+    ),
+]
+
+
+# Discovery first (fast, no model turn), then behavior (full send/settle round-trips),
+# then the mode/model separation contract.
+MODES_CASES: list[TUICase] = [*_DISCOVERY_CASES, *_BEHAVIOR_CASES, *_SEPARATION_CASES]
