@@ -11,8 +11,8 @@ Covers:
   - resolve_agent_dir() returns the project-scope agent dir when a project
     dir is given and the global agent dir otherwise.
   - write_agent_files() writes correct frontmatter (mode: primary, description,
-    amplifier/mode-<name> model alias) with the ``amplifier-`` filename prefix,
-    plus sidecar-manifest reconciliation:
+    and a ``name`` of ``<mode> (Amplifier)``) with the ``amplifier-`` filename
+    prefix, plus sidecar-manifest reconciliation:
       * stale generated files are pruned on a later run
       * a user's own (unowned) agent file is never overwritten
       * two modes mapping to the same filename in ONE run: first wins
@@ -293,6 +293,10 @@ def test_write_agent_files_writes_frontmatter(tmp_path: Path) -> None:
 
     plan_content = _read(plan)
     assert _frontmatter_value(plan_content, "mode") == "primary"
+    # Display name is the bare mode name with an " (Amplifier)" suffix. opencode
+    # spreads frontmatter over the filename-derived default, so this -- not the
+    # filename -- is what the agent picker and status line show.
+    assert json.loads(_frontmatter_value(plan_content, "name")) == "plan (Amplifier)"
     # No model field: the mode agent inherits the session's current model, so
     # opencode neither rejects it as invalid nor lists a synthetic mode model.
     assert "\nmodel:" not in plan_content
@@ -306,6 +310,7 @@ def test_write_agent_files_writes_frontmatter(tmp_path: Path) -> None:
     brainstorm_content = _read(brainstorm)
     assert "\nmodel:" not in brainstorm_content
     assert "[amplifier-agent:mode=brainstorm]" in brainstorm_content
+    assert json.loads(_frontmatter_value(brainstorm_content, "name")) == "brainstorm (Amplifier)"
 
     # Manifest records both generated files.
     manifest = agent_dir.parent / ".amplifier-generated-agents.json"
@@ -321,6 +326,27 @@ def test_write_agent_files_embeds_mode_directive(tmp_path: Path) -> None:
     content = _read(agent_dir / "amplifier-e2e-proj.md")
     assert "[amplifier-agent:mode=e2e-proj]" in content
     assert "\nmodel:" not in content
+
+
+def test_write_agent_files_display_name_is_suffixed_not_prefixed(tmp_path: Path) -> None:
+    """The user-visible agent name is ``<mode> (Amplifier)``, not ``amplifier-<mode>``.
+
+    opencode derives an agent's name from the filename stem but lets frontmatter
+    override it (``config/agent.ts``: ``{name, ...md.data}``). That single ``name``
+    is what both the "Select agent" picker and the prompt status line render, so
+    the suffixed form has to live in frontmatter -- the filename keeps the
+    ``amplifier-`` prefix purely for collision-free, safe-charset file naming.
+    """
+    agent_dir = tmp_path / ".opencode" / "agent"
+    write_agent_files([{"name": "plan", "description": "Plan."}], agent_dir)
+
+    content = _read(agent_dir / "amplifier-plan.md")
+    display_name = json.loads(_frontmatter_value(content, "name"))
+
+    assert display_name == "plan (Amplifier)"
+    assert not display_name.startswith("amplifier-")
+    # Filename (and therefore the manifest/prune bookkeeping) is unchanged.
+    assert (agent_dir / "amplifier-plan.md").exists()
 
 
 def test_write_agent_files_prunes_stale_on_second_run(tmp_path: Path) -> None:

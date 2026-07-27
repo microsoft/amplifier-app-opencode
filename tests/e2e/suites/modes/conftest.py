@@ -7,12 +7,12 @@ hooks-mode ``ModeDiscovery``). Seeding happens BEFORE the opencode TUI/server la
 ``modes_session``), so the modes exist when the launcher fetches ``GET /v1/modes`` at startup.
 
 The probe forces a DETERMINISTIC sentinel (``MODE-PROBE-OK::<name>``) when active, so both
-discovery (the ``amplifier-<name>`` agent in the "Select agent" dialog) and activation (the
+discovery (the ``<name> (Amplifier)`` agent in the "Select agent" dialog) and activation (the
 sentinel in the reply) are verifiable via the AI judge alone -- no log or filesystem
 inspection.
 
-Seeded sources (bare mode name -> path in DTU; the launcher adds the ``amplifier-`` prefix
-for the opencode agent identity, so ``e2e-proj`` -> agent ``amplifier-e2e-proj``):
+Seeded sources (bare mode name -> path in DTU; the launcher adds the `` (Amplifier)`` suffix
+for the opencode agent identity, so ``e2e-proj`` -> agent ``e2e-proj (Amplifier)``):
     e2e-proj  -> {PROJECT_DIR}/.amplifier/modes/e2e-proj.md   (amplifier project mode)
     e2e-user  -> /root/.amplifier/modes/e2e-user.md           (amplifier user mode)
 """
@@ -67,13 +67,13 @@ def _seed_mode(dtu_id: str, name: str, dest: str) -> None:
 
 
 # amplifier-agent mode discovery (and the ``mode-<name>`` model aliases the launcher turns
-# into ``amplifier-<name>`` agents) is captured ONCE, at server startup. Two independent
+# into ``<name> (Amplifier)`` agents) is captured ONCE, at server startup. Two independent
 # hazards make a naive launch flaky:
 #   1. STALENESS -- a warm DTU reuses a single amplifier-agent across suites, so a server that
 #      started before this suite seeded its modes never sees them.
 #   2. COLD START -- the very first launch on a freshly-provisioned DTU installs provider
 #      modules (~1-2 min); if the launcher's readiness wait is out-raced, its ``GET /v1/modes``
-#      fetch comes back empty and no ``amplifier-<name>`` agent files get written for the early
+#      fetch comes back empty and no ``<name> (Amplifier)`` agent files get written for the early
 #      tests.
 # The module-scoped ``_warm_modes_server`` fixture defeats both: it seeds the modes, stops any
 # stale server, starts a FRESH one headlessly (``--no-launch``) so it discovers the just-seeded

@@ -829,10 +829,25 @@ def write_command_files(skills: list[dict[str, Any]], command_dir: Path) -> None
 # independently. Lives next to the agent dir (in its parent scope dir).
 GENERATED_AGENTS_MANIFEST = ".amplifier-generated-agents.json"
 
-# Prefix applied to every generated agent so amplifier modes never collide with
-# opencode's native agents (e.g. ``build``). The prefix is an opencode-layer
-# concern only; amplifier-agent deals in the bare mode name.
+# Prefix applied to every generated agent FILENAME so amplifier modes never
+# collide with opencode's native agents (e.g. ``build``). Filenames are held to a
+# safe charset, so the prefix form is used here rather than the display form. The
+# prefix is an opencode-layer concern only; amplifier-agent deals in the bare mode
+# name.
 MODE_AGENT_PREFIX = "amplifier-"
+
+# Suffix that qualifies a mode's DISPLAY name, e.g. ``plan (Amplifier)``. Emitted
+# as the frontmatter ``name`` field, which opencode spreads over its
+# filename-derived default (see opencode ``config/agent.ts``). opencode gives an
+# agent a single ``name`` that serves as config key, "Select agent" picker entry,
+# and (title-cased) status-line label -- there is no separate display field -- so
+# this suffix is what the user sees everywhere.
+MODE_AGENT_DISPLAY_SUFFIX = " (Amplifier)"
+
+
+def mode_display_name(name: str) -> str:
+    """Return the user-visible opencode agent name for mode ``name``."""
+    return f"{name}{MODE_AGENT_DISPLAY_SUFFIX}"
 
 
 def fetch_modes(base_url: str, api_key: str) -> list[dict[str, Any]]:
@@ -973,6 +988,7 @@ def write_agent_files(
         content = (
             "---\n"
             "mode: primary\n"
+            f"name: {json.dumps(mode_display_name(name))}\n"
             f"description: {json.dumps(description)}\n"
             "---\n"
             f"Amplifier mode {json.dumps(name)}. "

@@ -3,12 +3,17 @@
 Two contracts are encoded here.
 
 Group A (discovery): each amplifier mode is advertised in opencode's native agent list
-dialog, PREFIXED with ``amplifier-``. The dialog is opened with the leader key (``ctrl+x``
+dialog, SUFFIXED with `` (Amplifier)``. The dialog is opened with the leader key (``ctrl+x``
 then ``a``), which renders a "Select agent" picker listing every primary agent by name
 (see opencode ``component/dialog-agent.tsx``). One case per built-in mode (``plan``,
-``brainstorm``), one dedicated prefix-convention case, and one case per seeded project/user
-probe mode. Each opens the dialog and asserts (via the AI judge) that the ``amplifier-<mode>``
-agent name appears.
+``brainstorm``), one dedicated naming-convention case, and one case per seeded project/user
+probe mode. Each opens the dialog and asserts (via the AI judge) that the
+``<mode> (Amplifier)`` agent name appears.
+
+The suffix lives in the generated agent file's frontmatter ``name`` field, which opencode
+spreads over the filename-derived default (``config/agent.ts``). The file on disk is still
+``amplifier-<mode>.md``; these tests assert only on what the user sees, so they are
+deliberately blind to that.
 
 Group B (behavior): once a mode is advertised, selecting it must actually change behavior.
 The synthetic probe mode emits a deterministic sentinel (``MODE-PROBE-OK::<name>``) so a
@@ -34,6 +39,18 @@ from framework.harness import Step, TUICase, send_and_settle, setup_select_sonne
 # (``agent_list: <leader>a``, ``LeaderDefault = ctrl+x``).
 _OPEN_AGENT_LIST = Step("send_keys", "C-x a")
 _AGENT_DIALOG_MARKER = "Select agent"
+
+
+def _mode_agent(mode: str) -> str:
+    """Name opencode shows for amplifier mode ``mode``: ``<mode> (Amplifier)``.
+
+    This is the ONLY name the user ever sees. In opencode an agent has a single
+    ``name`` that is simultaneously the config-map key, the string in the "Select
+    agent" picker, and (title-cased) the string in the prompt status line -- there
+    is no separate display field. The generated file is still ``amplifier-<mode>.md``
+    on disk, but its frontmatter ``name`` overrides the filename-derived default.
+    """
+    return f"{mode} (Amplifier)"
 
 
 def _discovery_case(case_name: str, agent_name: str) -> TUICase:
@@ -64,8 +81,8 @@ def _select_agent(agent_name: str) -> list[Step]:
     The final ``judge`` step is a real selection GATE: a bare ``wait`` on the agent name
     cannot be used here because the typed filter text echoes the name into the search box
     (matching immediately even when no such agent exists). Instead we assert the picker
-    actually resolved the name to an active agent. Until the launcher generates the
-    ``amplifier-<mode>`` agents this fails with "No results found", which is the correct red.
+    actually resolved the name to an active agent. If the launcher does not generate the
+    ``<mode> (Amplifier)`` agents this fails with "No results found", which is the correct red.
     """
     return [
         _OPEN_AGENT_LIST,
@@ -76,7 +93,7 @@ def _select_agent(agent_name: str) -> list[Step]:
             "judge",
             f"Has the agent '{agent_name}' been selected and become the ACTIVE agent -- i.e. "
             f"the 'Select agent' picker has closed and '{agent_name}' (possibly title-cased, "
-            f"e.g. 'Amplifier-Plan') now shows as the active agent in the prompt footer/status "
+            f"e.g. 'Plan (Amplifier)') now shows as the active agent in the prompt footer/status "
             f"line? Answer NO if the picker is still open, shows 'No results found', or the "
             f"active agent is a different one such as Build.",
         ),
@@ -84,29 +101,32 @@ def _select_agent(agent_name: str) -> list[Step]:
 
 
 # --------------------------------------------------------------------------- #
-# Group A -- discovery: each amplifier mode is a prefixed primary agent
+# Group A -- discovery: each amplifier mode is a suffixed primary agent
 # --------------------------------------------------------------------------- #
 _DISCOVERY_CASES: list[TUICase] = [
-    # Built-in amplifier modes, prefixed. A native opencode `plan` agent may also exist;
-    # we specifically require amplifier's to be `amplifier-plan`.
-    _discovery_case("discover-amplifier-plan", "amplifier-plan"),
-    _discovery_case("discover-amplifier-brainstorm", "amplifier-brainstorm"),
-    # Seeded project/user modes (see conftest), prefixed by the launcher.
-    _discovery_case("discover-amplifier-project-mode", "amplifier-e2e-proj"),
-    _discovery_case("discover-amplifier-user-mode", "amplifier-e2e-user"),
-    # The explicit prefix-convention contract: amplifier modes must NOT collide with
-    # opencode's native agents; they carry the `amplifier-` prefix.
+    # Built-in amplifier modes, suffixed. A native opencode `plan` agent may also exist;
+    # we specifically require amplifier's to be `plan (Amplifier)`.
+    _discovery_case("discover-amplifier-plan", _mode_agent("plan")),
+    _discovery_case("discover-amplifier-brainstorm", _mode_agent("brainstorm")),
+    # Seeded project/user modes (see conftest), suffixed by the launcher.
+    _discovery_case("discover-amplifier-project-mode", _mode_agent("e2e-proj")),
+    _discovery_case("discover-amplifier-user-mode", _mode_agent("e2e-user")),
+    # The explicit naming-convention contract: amplifier modes must NOT collide with
+    # opencode's native agents, and must read as the mode name first with amplifier as
+    # a parenthesised qualifier -- NOT as an `amplifier-` prefix.
     TUICase(
-        "prefix-required-not-bare",
+        "suffix-required-not-prefixed-or-bare",
         [
             _OPEN_AGENT_LIST,
             Step("wait", _AGENT_DIALOG_MARKER),
             Step(
                 "judge",
-                "In the agent list, are amplifier's modes shown WITH an 'amplifier-' prefix "
-                "(specifically 'amplifier-plan' and 'amplifier-brainstorm')? They must not be "
-                "presented as bare 'plan'/'brainstorm'. A separate native opencode agent (e.g. "
-                "'build' or a native 'plan') may also be present, which is fine.",
+                "In the agent list, are amplifier's modes shown as the mode name followed by "
+                "'(Amplifier)' -- specifically 'plan (Amplifier)' and 'brainstorm (Amplifier)'? "
+                "Answer NO if they are instead shown with an 'amplifier-' PREFIX (e.g. "
+                "'amplifier-plan', 'Amplifier-Plan'), or as bare 'plan'/'brainstorm' with no "
+                "Amplifier qualifier at all. A separate native opencode agent (e.g. 'build' or "
+                "a native 'plan') may also be present, which is fine.",
             ),
             Step("send_keys", "Escape"),
         ],
@@ -132,7 +152,7 @@ _BEHAVIOR_CASES: list[TUICase] = [
         "activate-probe-mode-sentinel",
         [
             *setup_select_sonnet5(),
-            *_select_agent("amplifier-e2e-user"),
+            *_select_agent(_mode_agent("e2e-user")),
             *send_and_settle("say anything"),
             Step(
                 "judge",
@@ -146,13 +166,13 @@ _BEHAVIOR_CASES: list[TUICase] = [
         "activate-amplifier-plan-persists",
         [
             *setup_select_sonnet5(),
-            *_select_agent("amplifier-plan"),
+            *_select_agent(_mode_agent("plan")),
             *send_and_settle("hello"),
             *send_and_settle("are you still there?"),
             Step(
                 "judge",
-                "Is 'amplifier-plan' still the active agent/mode shown on screen after two "
-                "turns? Its name may render title-cased (e.g. 'Amplifier-Plan').",
+                "Is 'plan (Amplifier)' still the active agent/mode shown on screen after two "
+                "turns? Its name may render title-cased (e.g. 'Plan (Amplifier)').",
             ),
         ],
     ),
@@ -162,7 +182,7 @@ _BEHAVIOR_CASES: list[TUICase] = [
         "activate-amplifier-plan-behavior",
         [
             *setup_select_sonnet5(),
-            *_select_agent("amplifier-plan"),
+            *_select_agent(_mode_agent("plan")),
             *send_and_settle("implement a hello world Python script and save it to hello.py"),
             Step(
                 "judge",
@@ -176,7 +196,7 @@ _BEHAVIOR_CASES: list[TUICase] = [
         "activate-amplifier-brainstorm-behavior",
         [
             *setup_select_sonnet5(),
-            *_select_agent("amplifier-brainstorm"),
+            *_select_agent(_mode_agent("brainstorm")),
             *send_and_settle("build a URL shortener"),
             Step(
                 "judge",
@@ -192,7 +212,7 @@ _BEHAVIOR_CASES: list[TUICase] = [
 # Group C -- separation: modes are agents, NOT selectable models
 # --------------------------------------------------------------------------- #
 # A mode is a per-turn behavior overlay. Its ONLY user-facing home is the agent
-# ("Select agent", Tab / ctrl+x a) picker as ``amplifier-<name>``. It must NOT
+# ("Select agent", Tab / ctrl+x a) picker as ``<name> (Amplifier)``. It must NOT
 # leak into opencode's ``/models`` ("Select model") picker.
 #
 # Today amplifier-agent advertises a synthetic ``mode-<name>`` model alias per
@@ -229,14 +249,14 @@ _SEPARATION_CASES: list[TUICase] = [
     TUICase(
         "modes-in-agents-not-in-models",
         [
-            # 1. Agent picker: amplifier-plan and amplifier-brainstorm ARE listed.
+            # 1. Agent picker: plan (Amplifier) and brainstorm (Amplifier) ARE listed.
             _OPEN_AGENT_LIST,
             Step("wait", _AGENT_DIALOG_MARKER),
-            Step("wait", "amplifier-plan", timeout=15.0),
+            Step("wait", _mode_agent("plan"), timeout=15.0),
             Step(
                 "judge",
-                "In this agent list ('Select agent'), are BOTH 'amplifier-plan' and "
-                "'amplifier-brainstorm' shown as selectable agents?",
+                "In this agent list ('Select agent'), are BOTH 'plan (Amplifier)' and "
+                "'brainstorm (Amplifier)' shown as selectable agents?",
             ),
             Step("send_keys", "Escape"),
             # 2. Model picker: neither mode may appear as a selectable model. Filter by
@@ -258,9 +278,9 @@ _SEPARATION_CASES: list[TUICase] = [
     # Activating a mode agent must NOT surface an invalid-model error. The mode
     # agent files declare ``model: amplifier/mode-<name>``; if that alias is not a
     # model opencode considers valid, opencode rejects the agent with e.g.
-    # "Agent amplifier-plan's configured model amplifier/mode-plan is not valid".
+    # "Agent plan (Amplifier)'s configured model amplifier/mode-plan is not valid".
     # So a mode's model reference must stay RESOLVABLE for opencode even though the
-    # alias must not appear in the /models picker. This case selects amplifier-plan
+    # alias must not appear in the /models picker. This case selects plan (Amplifier)
     # and asserts no such error. EXPECTED TO FAIL while the alias is hidden from
     # opencode's model list without being made otherwise valid.
     TUICase(
@@ -268,13 +288,14 @@ _SEPARATION_CASES: list[TUICase] = [
         [
             _OPEN_AGENT_LIST,
             Step("wait", _AGENT_DIALOG_MARKER),
-            Step("send_text", "amplifier-plan"),
+            Step("send_text", _mode_agent("plan")),
             Step("send_keys", "Enter"),
             Step(
                 "judge",
-                "The 'amplifier-plan' agent (an amplifier MODE) was just selected. Is the screen "
-                "FREE of any error about the agent's configured model being invalid? Specifically, "
-                "there must be NO message like \"Agent amplifier-plan's configured model "
+                "The 'plan (Amplifier)' agent (an amplifier MODE) was just selected. Is the "
+                "screen FREE of any error about the agent's configured model being invalid? "
+                "Specifically, there must be NO message like \"Agent plan (Amplifier)'s "
+                "configured model "
                 "amplifier/mode-plan is not valid\", nor any 'model ... is not valid' / "
                 "'invalid model' / 'unknown model' error anywhere on screen. Answer YES if no such "
                 "error is present (the mode activated cleanly). Answer NO if any invalid/not-valid "
