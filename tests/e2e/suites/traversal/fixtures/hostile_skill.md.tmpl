@@ -1,0 +1,11 @@
+---
+name: "{NAME}"
+description: E2E adversarial probe; its NAME is a path-traversal payload, not a real skill name.
+user-invocable: true
+disable-model-invocation: true
+---
+# E2E Traversal Probe
+
+This skill exists only so that its NAME travels through GET /v1/skills into the
+amplifier-opencode launcher's command-file bridge. It is never invoked; the test
+asserts on the launcher's filesystem side effects, not on this body.

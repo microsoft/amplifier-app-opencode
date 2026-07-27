@@ -41,13 +41,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import click
@@ -498,6 +499,76 @@ def write_opencode_config(
 
 
 # ---------------------------------------------------------------------------
+# Shared bridge-name validation (used by BOTH the skills and modes bridges)
+# ---------------------------------------------------------------------------
+
+# Both bridges turn a server-supplied ``name`` into a FILENAME under a directory we
+# own. That name is attacker-influenced: a skill's name is read verbatim from SKILL.md
+# YAML frontmatter (upstream tool-skills discovery checks it against its own pattern but
+# only logs a warning and registers it anyway), and any actor who can drop a file into a
+# discovery dir controls it. Without a shape check, ``command_dir / f"{name}.md"`` with
+# a name like ``../../../../tmp/evil`` escapes the directory entirely, and
+# ``_atomic_write_text``'s ``os.replace`` overwrites the target silently.
+#
+# Worse, the name is persisted in the ownership manifest, so the NEXT run's prune step
+# (``(command_dir / stale).unlink()``) turns it into an arbitrary-delete primitive.
+# Validating here -- at fetch, before anything is written or recorded -- closes both.
+_SAFE_BRIDGE_NAME = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def is_safe_bridge_name(name: str) -> bool:
+    """True if ``name`` is safe to use as a bare filename component.
+
+    Three independent conditions, deliberately redundant so loosening any one of them
+    cannot silently reopen traversal:
+
+    * the whitelist admits no ``/`` and no ``\\``, so no separator of either flavour
+      survives (the backslash case matters on Windows, where a mode name derived from a
+      file stem can legitimately contain one),
+    * ``.`` and ``..`` are rejected explicitly -- they pass the whitelist but are
+      directory references, not names,
+    * the name must equal its own basename and must not be absolute, which is the
+      general statement of the property the first two conditions approximate.
+    """
+    if not name or name in {".", ".."}:
+        return False
+    if not _SAFE_BRIDGE_NAME.fullmatch(name):
+        return False
+    pure = PurePosixPath(name)
+    return name == pure.name and not pure.is_absolute()
+
+
+def _usable_bridge_rows(data: list[Any], kind: str) -> list[dict[str, Any]]:
+    """Keep well-formed ``{name, ...}`` rows whose name is a safe filename component.
+
+    The SINGLE choke point for both ``fetch_skills`` and ``fetch_modes`` -- shared on
+    purpose so the two bridges cannot drift apart on what they consider acceptable.
+
+    Rejection is LOUD (a yellow warning naming the offender) rather than silent: a name
+    that fails this check is either a misconfigured resource the author needs to fix or
+    an attempted traversal the user needs to know about. Neither should be swallowed.
+    Rejection is also non-fatal -- one bad row must not block the launch, matching the
+    best-effort contract of the fetch functions.
+    """
+    rows: list[dict[str, Any]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if not is_safe_bridge_name(name):
+            click.secho(
+                f"      {kind}: refusing {name!r} -- unsafe name (must be a bare filename "
+                "of [A-Za-z0-9._-] characters); not bridged",
+                fg="yellow",
+            )
+            continue
+        rows.append(row)
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Skills bridge: /v1/skills -> opencode /command files
 # ---------------------------------------------------------------------------
 
@@ -515,6 +586,11 @@ def fetch_skills(base_url: str, api_key: str) -> list[dict[str, Any]]:
     strictly best-effort: on ANY error (network failure, non-200, malformed
     JSON, missing/oddly-shaped ``data``) it returns an empty list and never
     raises. Skills are an optional enhancement; they must never block launch.
+
+    A skill's ``name`` becomes a FILENAME downstream, so rows carrying an unsafe name
+    are dropped here via the shared :func:`_usable_bridge_rows`. Filtering at fetch --
+    rather than at write -- means an unsafe name can never reach the ownership manifest
+    either, which is what closes the delayed-delete path through the prune step.
     """
     try:
         r = httpx.get(
@@ -531,8 +607,7 @@ def fetch_skills(base_url: str, api_key: str) -> list[dict[str, Any]]:
     data = body.get("data", [])
     if not isinstance(data, list):
         return []
-    # Keep only well-formed rows that at least carry a usable name.
-    return [s for s in data if isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"]]
+    return _usable_bridge_rows(data, "skills")
 
 
 def resolve_command_dir(project_dir: Path | None) -> Path:
@@ -681,6 +756,13 @@ def fetch_modes(base_url: str, api_key: str) -> list[dict[str, Any]]:
 
     Unlike skills there is no server-side filter -- /v1/modes already returns
     exactly the modes we want to surface (all shipped/discovered modes).
+
+    Names are validated by the same shared :func:`_usable_bridge_rows` the skills
+    bridge uses, so the two faces cannot drift on what they accept. A mode's name is
+    a ``.md`` file stem server-side, so it cannot contain ``/`` on POSIX -- but it CAN
+    be ``..`` or contain a backslash (which traverses on Windows), and
+    ``MODE_AGENT_PREFIX`` offers no protection since ``amplifier-../../evil`` still
+    resolves through the ``..`` segments.
     """
     try:
         r = httpx.get(
