@@ -72,7 +72,7 @@ Transitive runtimes:
 
 The provisioned DTU installs `opencode` at a pinned version (`1.17.20`), plus
 `amplifier-agent` (from latest main; must satisfy amplifier-opencode's minimum,
-currently `>= 0.10.0`) and `amplifier-opencode`, plus `git`, `curl`, `uv`, and `tmux`.
+currently `>= 0.11.0`) and `amplifier-opencode`, plus `git`, `curl`, `uv`, and `tmux`.
 
 ## Running
 

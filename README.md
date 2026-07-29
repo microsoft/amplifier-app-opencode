@@ -152,8 +152,19 @@ amplifier-agent will pick it up automatically:
 | OpenAI (GPT) | `OPENAI_API_KEY` |
 | Azure OpenAI | `AZURE_OPENAI_API_KEY` or `AZURE_OPENAI_KEY` |
 | Ollama (local models) | `OLLAMA_HOST` |
+| GitHub Copilot | `GITHUB_TOKEN` |
 
 Run `amplifier-opencode doctor` to see which providers will actually be served.
+
+### GitHub Copilot
+
+For GitHub Copilot, the `gh` CLI bridge is the easiest option:
+
+```bash
+export GITHUB_TOKEN=$(gh auth token)
+```
+
+Models appear namespaced as `github-copilot/<model>` with a `(GitHub)` suffix.
 
 ---
 
@@ -280,7 +291,7 @@ Why: `git` is required because amplifier-agent and amplifier-app-opencode are
 installed via `git+https://...` URLs (neither is on PyPI yet). `curl` is
 required by the uv and opencode one-line installers.
 
-#### 1. amplifier-agent — the backend server (>= 0.10.0 required)
+#### 1. amplifier-agent — the backend server (>= 0.11.0 required)
 
 `amplifier-agent` is the OpenAI-compatible HTTP server this adapter talks to.
 Use the official one-line installer — it pulls the latest released binary and
@@ -289,23 +300,25 @@ primes the bundle cache so the first run is instant:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash
 
-# to pin a specific version instead of latest (must be >= 0.10.0, the floor
+# to pin a specific version instead of latest (must be >= 0.11.0, the floor
 # amplifier-opencode enforces):
-#   curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash -s -- --tag v0.10.0
+#   curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-agent/main/install.sh | bash -s -- --tag v0.11.0
 
 # ensure ~/.local/bin is on PATH, then verify:
-amplifier-agent version --json   # → {"version":"0.10.0","protocolVersion":"0.3.0"}
+amplifier-agent version --json   # → {"version":"0.11.0","protocolVersion":"0.3.0"}
 ```
 
 The installer needs [`uv`](https://docs.astral.sh/uv/) and `curl` on PATH and
 will tell you exactly what to install if either is missing — it will not
 bootstrap them silently.
 
-> **Version requirement: `amplifier-agent >= 0.10.0` is mandatory.** Older
+> **Version requirement: `amplifier-agent >= 0.11.0` is mandatory.** Older
 > versions lack the pieces amplifier-opencode depends on (the `serve
 > chat-completions` HTTP face, multi-provider routing, the `auth` subcommand,
-> and the `/v1/skills` and `/v1/modes` routes the skills and modes bridges
-> read). If you use the one-command install, amplifier-opencode detects a
+> the `/v1/skills` and `/v1/modes` routes the skills and modes bridges read,
+> and the reseller model-id namespacing that keeps GitHub Copilot's models from
+> shadowing the native anthropic provider's). If you use the one-command
+> install, amplifier-opencode detects a
 > too-old amplifier-agent and force-updates it for you; if you're installing by
 > hand and see an older version, upgrade with `amplifier-agent update` and
 > re-run `amplifier-opencode doctor` to confirm.
