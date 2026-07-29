@@ -254,6 +254,19 @@ Common failures and their fix:
 | `Could not run \`amplifier-agent providers list --json\`` | Install/upgrade amplifier-agent so the doctor command can query it |
 | `opencode config ... is malformed JSON` | Open `~/.config/opencode/opencode.jsonc`, fix or delete it, retry |
 
+If the stack is healthy but a *reply* is wrong, the doctor cannot help. To see
+exactly what was sent to the model and what came back, see
+[Capture raw LLM requests and responses](#capture-raw-llm-requests-and-responses)
+under Advanced usage.
+
+Logs, when you need them:
+
+```
+<tempdir>/amplifier-agent.log                 the backend server's stdout/stderr
+~/.local/share/opencode/log/opencode.log      opencode's own log
+~/.amplifier-agent/state/workspaces/          per-session state and event logs
+```
+
 ---
 
 ## Advanced usage
@@ -468,6 +481,66 @@ amplifier-opencode launch --host-config /path/to/host_config.json
 ```
 
 See [amplifier-agent's host_config documentation](https://github.com/microsoft/amplifier-agent) for the full schema.
+
+### Capture raw LLM requests and responses
+
+When you need to see exactly what went to the model and came back (debugging a
+bad reply, a tool call that misfired, or a prompt that did not look the way you
+expected), turn on raw payload capture in your `host_config.json`:
+
+```json
+{
+  "provider": { "module": "anthropic" },
+  "debug": { "rawLlmPayloads": true }
+}
+```
+
+```bash
+amplifier-opencode launch --host-config /path/to/host_config.json
+```
+
+Every turn then records the complete outbound request (full message list, system
+prompt, and tool schemas) and the complete response (content blocks, usage,
+stop reason) into the session's event log:
+
+```
+~/.amplifier-agent/state/workspaces/opencode/sessions/http-<session-id>/context-intelligence/events.jsonl
+```
+
+The payloads ride on the `llm:request` and `llm:response` events under a `raw`
+key. Those lines are large, so pull the fields you want rather than opening the
+file whole:
+
+```bash
+# summarize the most recent session's captured request and response
+python3 - <<'PY'
+import glob, json, os
+f = max(glob.glob(os.path.expanduser(
+    "~/.amplifier-agent/state/workspaces/opencode/sessions/*/context-intelligence/events.jsonl"
+)), key=os.path.getmtime)
+for line in open(f):
+    e = json.loads(line); d = e.get("data") or {}
+    if isinstance(d, dict) and "raw" in d and e.get("event", "").startswith("llm:"):
+        print(e["event"], "->", sorted(d["raw"])[:8])
+PY
+```
+
+Three things to know before you turn this on:
+
+- **It writes your full conversation text to disk, unredacted.** Secret
+  redaction matches by key name only and never scans string values, so prompts,
+  tool results, and file contents are stored as-is. There is no truncation and no
+  size cap. Do not leave it on for routine work, and be careful where those
+  session directories end up.
+- **The value must be a real JSON boolean.** `"true"` as a string is rejected
+  with a config error rather than silently accepted.
+- **Coverage depends on the provider.** `anthropic`, `openai`, and
+  `azure-openai` record full payloads. `ollama` records full payloads but does
+  not redact secrets. `github-copilot` accepts the flag but only emits counts and
+  lengths, so it will not give you prompt or response bodies.
+
+Requires `amplifier-agent >= 0.12.0`. Older versions reject `debug` as an unknown
+config key, and their HTTP face ignored `provider.config` entirely.
 
 ### Point at a different amplifier-agent
 
