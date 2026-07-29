@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries for 0.1.x were reconstructed from git history when this file was added
 in 0.2.0.
 
+## [Unreleased]
+
+### Added
+
+- E2E DTU profile forwards `GITHUB_TOKEN`, so the harness can exercise
+  amplifier-agent's GitHub Copilot provider alongside anthropic. Optional —
+  unset is fine and the stack runs anthropic-only. Requires amplifier-agent
+  0.10.1+, which namespaces Copilot's model ids (`github-copilot/<model>`) so
+  they no longer collide with the native provider's. No launcher change was
+  needed: Copilot models flow through the existing `display_name` → opencode
+  `name` mapping and render as `<Model> (GitHub)` in the picker.
+
 ## [0.2.0] — 2026-07-27
 
 ### Added

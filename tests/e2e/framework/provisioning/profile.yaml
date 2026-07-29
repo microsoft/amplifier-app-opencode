@@ -22,6 +22,12 @@ passthrough:
     # The provider is standardized on ANTHROPIC_API_KEY; passed into the DTU so
     # amplifier-agent's server can enumerate models and answer chat completions.
     - { name: anthropic, key_env: ANTHROPIC_API_KEY }
+    # Optional. When set on the host, amplifier-agent auto-enables its github-copilot
+    # provider alongside anthropic, and the model picker gains the Copilot catalog
+    # (ids namespaced `github-copilot/<model>`, display names suffixed "(GitHub)").
+    # Unset is fine -- DTU skips an empty value and the stack runs anthropic-only.
+    # Set it host-side with `export GITHUB_TOKEN=$(gh auth token)` before launching.
+    - { name: github_token, key_env: GITHUB_TOKEN }
 
 # Local multi-repo Gitea mirror. Redirects the `uv tool install --from git+github.com/...`
 # lines in install-opencode-stack.sh to the local mirror so both tools install from the
