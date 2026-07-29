@@ -10,6 +10,19 @@ in 0.2.0.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-29
+
+### Changed
+
+- **Agent floor and pinned ref raised to 0.12.0.** `--host-config` has always
+  been forwarded to `amplifier-agent serve --config`, but below 0.12.0 the
+  agent's HTTP face dropped the file's `provider.config` block on every turn, so
+  the flag silently did less under `serve` than it does under `run`. 0.12.0 is
+  the first version where it actually applies. This also makes the agent's new
+  `debug.rawLlmPayloads` key reachable from opencode: below 0.12.0 it is
+  rejected as an unknown top-level key. No launcher change was needed — the
+  passthrough was already correct; only the engine it points at had to catch up.
+
 ## [0.3.0] — 2026-07-29
 
 ### Added

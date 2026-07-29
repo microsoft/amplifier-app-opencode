@@ -52,16 +52,20 @@ OPENCODE_BIN = "opencode"
 OPENCODE_INSTALL_SH = "https://opencode.ai/install"
 OPENCODE_NPM_PACKAGE = "opencode-ai"
 
-# Minimum amplifier-agent version amplifier-opencode requires. >= 0.11.0 is the
-# first version that namespaces reseller model ids (`github-copilot/<model>`).
-# Below it, Copilot serves `claude-sonnet-5` and `claude-opus-5` under ids
-# byte-identical to the native anthropic provider's, and whichever provider is
-# enumerated last silently captures the other's traffic. Since we document the
-# Copilot setup, the floor has to be the version where that is safe.
-# (0.10.0 remains the floor for `GET /v1/skills` and `GET /v1/modes`, which the
-# skills and modes bridges read; 0.9.3 for `auth set --stdin`, which onboarding
-# uses to hand the provider key to the agent off-argv. 0.11.0 subsumes both.)
-MIN_AGENT_VERSION = "0.11.0"
+# Minimum amplifier-agent version amplifier-opencode requires. >= 0.12.0 is the
+# first version whose HTTP face honours `provider.config` from the host config
+# we pass via `--host-config`. Below it, `serve` accepted the file but dropped
+# that block on every turn, so `--host-config` silently did less than it does
+# under `run` -- and `debug.rawLlmPayloads` is rejected outright as an unknown
+# key. Since we document `--host-config` as the way to configure the engine, the
+# floor has to be the version where it actually applies.
+# (0.11.0 remains the floor for namespaced reseller model ids
+# (`github-copilot/<model>`), without which Copilot's `claude-sonnet-5` collides
+# with the native anthropic provider's; 0.10.0 for `GET /v1/skills` and
+# `GET /v1/modes`, which the skills and modes bridges read; 0.9.3 for
+# `auth set --stdin`, which onboarding uses to hand the provider key to the
+# agent off-argv. 0.12.0 subsumes all three.)
+MIN_AGENT_VERSION = "0.12.0"
 # The silent, launch-time auto-install/self-heal targets this exact known-good
 # git tag rather than a moving branch, so a reliability tool never drags users
 # onto un-vetted ``main``. Kept in lockstep with MIN_AGENT_VERSION: to adopt a
