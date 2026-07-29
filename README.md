@@ -152,8 +152,19 @@ amplifier-agent will pick it up automatically:
 | OpenAI (GPT) | `OPENAI_API_KEY` |
 | Azure OpenAI | `AZURE_OPENAI_API_KEY` or `AZURE_OPENAI_KEY` |
 | Ollama (local models) | `OLLAMA_HOST` |
+| GitHub Copilot | `GITHUB_TOKEN` |
 
 Run `amplifier-opencode doctor` to see which providers will actually be served.
+
+### GitHub Copilot
+
+For GitHub Copilot, the `gh` CLI bridge is the easiest option:
+
+```bash
+export GITHUB_TOKEN=$(gh auth token)
+```
+
+Models appear namespaced as `github-copilot/<model>` with a `(GitHub)` suffix.
 
 ---
 
