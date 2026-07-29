@@ -10,15 +10,35 @@ in 0.2.0.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-29
+
 ### Added
 
 - E2E DTU profile forwards `GITHUB_TOKEN`, so the harness can exercise
   amplifier-agent's GitHub Copilot provider alongside anthropic. Optional —
   unset is fine and the stack runs anthropic-only. Requires amplifier-agent
-  0.10.1+, which namespaces Copilot's model ids (`github-copilot/<model>`) so
+  0.11.0+, which namespaces Copilot's model ids (`github-copilot/<model>`) so
   they no longer collide with the native provider's. No launcher change was
   needed: Copilot models flow through the existing `display_name` → opencode
   `name` mapping and render as `<Model> (GitHub)` in the picker.
+- README documents GitHub Copilot as a provider option, including the
+  `export GITHUB_TOKEN=$(gh auth token)` bridge.
+
+### Changed
+
+- Minimum required amplifier-agent version raised to `0.11.0`, the first
+  release that namespaces reseller model ids. Below it, Copilot's
+  `claude-sonnet-5` and `claude-opus-5` are served under ids byte-identical to
+  the native anthropic provider's and silently capture its traffic — so the
+  Copilot setup this release documents is only safe at or above that floor.
+  `AGENT_PINNED_REF` follows it to `v0.11.0`, meaning the launch-time
+  auto-install/self-heal now targets that tag.
+
+### Fixed
+
+- `__version__` was left at `0.1.3` when 0.2.0 shipped, so `--version` and
+  `doctor` under-reported the installed adapter. Now tracks the version in
+  `pyproject.toml`.
 
 ## [0.2.0] — 2026-07-27
 
