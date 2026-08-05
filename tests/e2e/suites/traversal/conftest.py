@@ -35,6 +35,7 @@ amplifier-agent fixes skill discovery at server STARTUP.
 from __future__ import annotations
 
 import shlex
+import subprocess
 import tempfile
 import time
 from collections.abc import Generator
@@ -154,3 +155,121 @@ def traversal_session(dtu_id: str) -> Generator[TmuxTuiDriver, None, None]:
         yield driver
     finally:
         driver.close()
+
+
+# ---------------------------------------------------------------------------
+# Modes-face hostile-name fixture -- the mode-face counterpart to the skills-face
+# fixture above. Covers ISSUE-001 in docs/ISSUES.md and the "Known deviation"
+# subsection of docs/spec/skills-and-modes-bridge.md: fetch_modes accepts any
+# non-empty string as a name, unlike fetch_skills, which routes through the shared
+# is_safe_bridge_name validator.
+# ---------------------------------------------------------------------------
+
+_MODE_TEMPLATE_PATH = Path(__file__).parent / "fixtures" / "hostile_mode.md.tmpl"
+
+# The unsafe-but-DISCOVERABLE mode name used to probe the modes face. Confirmed
+# empirically inside the DTU (seed several unsafe-but-POSIX-legal candidates as
+# ``.md`` file stems, restart the agent server, then query ``GET /v1/modes``):
+# a name containing a space, a name containing ``$``, and the literal name ``..``
+# ALL survive discovery. ``..`` is the clearest choice of the three because it is
+# one of only two names ``is_safe_bridge_name`` rejects BY LITERAL VALUE rather
+# than by character class, and it is the exact case named in both
+# ``fetch_modes``'s own docstring and ISSUE-001.
+#
+# HONEST FINDING: unlike the skills face (whose payload is a full relative path
+# that resolves, via several ``..`` hops, to a real out-of-tree write), a mode's
+# name is a ``.md`` file STEM, which cannot itself contain ``/`` on POSIX.
+# Prefixing with ``MODE_AGENT_PREFIX`` ("amplifier-") turns ``..`` into the
+# single, perfectly ordinary filename component ``amplifier-..md`` -- there is no
+# ``/`` for it to introduce, so no directory escape is constructible from this
+# name today. The defect this test proves is therefore a VALIDATION-CONTRACT
+# violation (a name the skills face would refuse is silently accepted here, and
+# reaches both the write step and the ownership manifest), not a working
+# traversal exploit. Severity is lower than the skills-face case for exactly
+# this reason -- no fabricated exploit is claimed.
+HOSTILE_MODE_NAME = ".."
+
+# Seed path: a project-scoped mode whose file STEM is "..". Path("...md").stem is
+# ".." -- the first two dots form the stem, the third is where pathlib splits off
+# the ".md" suffix.
+HOSTILE_MODE_SEED_PATH = f"{PROJECT_DIR}/.amplifier/modes/...md"
+
+# Where the name would land if the modes face applied no validation at all:
+# MODE_AGENT_PREFIX ("amplifier-") + the bare name + ".md". "amplifier-" + ".." + ".md"
+# concatenates to "amplifier-...md" (THREE dots: the two from the name, plus the one
+# that separates the ".md" suffix) -- confirmed empirically in the DTU, not just derived
+# on paper, precisely because this arithmetic is easy to get wrong by one dot. Kept as a
+# literal (not computed from cli.py) so the test asserts an independently-derived
+# expectation rather than re-running the exact code path it is meant to catch.
+AGENT_DIR = f"{PROJECT_DIR}/.opencode/agent"
+AGENTS_MANIFEST = f"{PROJECT_DIR}/.opencode/.amplifier-generated-agents.json"
+REFUSED_AGENT_FILENAME = "amplifier-...md"
+REFUSED_AGENT_PATH = f"{AGENT_DIR}/{REFUSED_AGENT_FILENAME}"
+
+# The refusal wording `_usable_bridge_rows` prints for a rejected name (see cli.py
+# and docs/spec/skills-and-modes-bridge.md, "Name safety"): "<kind>: refusing
+# '<name>' -- unsafe name (must be a bare filename of [A-Za-z0-9._-] characters);
+# not bridged". Pinned to the "modes" kind AND this specific name (not a bare
+# "unsafe name" substring) because the still-present hostile SKILL seeded by
+# ``traversal_session`` above triggers its OWN "skills: refusing ... -- unsafe
+# name" line on every server startup in this module -- a bare substring match
+# would pass on that unrelated line and never actually probe the modes face.
+REFUSAL_MARKER = f"modes: refusing {HOSTILE_MODE_NAME!r} -- unsafe name"
+
+
+def _seed_hostile_mode(dtu_id: str) -> None:
+    """Render and push the hostile mode file (stem "..") into the DTU's project mode dir."""
+    content = _MODE_TEMPLATE_PATH.read_text(encoding="utf-8").replace("{NAME}", HOSTILE_MODE_NAME)
+    parent = HOSTILE_MODE_SEED_PATH.rsplit("/", 1)[0]
+    dtu.exec_json(dtu_id, ["bash", "-lc", f"mkdir -p {shlex.quote(parent)}"])
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".md", prefix="hostile-mode-", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(content)
+        local_path = handle.name
+    dtu.file_push(dtu_id, local_path, HOSTILE_MODE_SEED_PATH)
+
+
+@pytest.fixture(scope="module")
+def hostile_mode_session(dtu_id: str) -> Generator[subprocess.CompletedProcess[str], None, None]:
+    """Seed the hostile mode, then run ``amplifier-opencode prepare`` so the launcher bridges it.
+
+    Unlike ``traversal_session`` above (the skills-face fixture), this drives ``prepare``
+    directly via ``driver.run_command`` rather than ``launch`` under tmux: ``prepare`` never
+    execs opencode, so it returns synchronously with the launcher's own stdout captured --
+    exactly the surface the refusal-message assertion in ``test_traversal.py`` needs.
+
+    Preconditions, in the same order as ``traversal_session``:
+
+    1. Any previously-generated refused-name artifact is removed, so its later absence/
+       presence can only be explained by THIS run.
+    2. Any already-running amplifier-agent is stopped and we wait for its port to free --
+       mode discovery is fixed at server STARTUP, so a reused server would never see the
+       freshly-seeded hostile mode and this suite would pass VACUOUSLY.
+    3. The hostile mode file is seeded, so startup discovery picks it up.
+    """
+    tmux_session = f"{TMUX_SESSION}"
+    exec_prefix = ["amplifier-digital-twin", "exec", dtu_id, "--"]
+    driver = TmuxTuiDriver(tmux_session, exec_prefix=exec_prefix)
+
+    driver.run_command(["bash", "-lc", f"rm -f {shlex.quote(REFUSED_AGENT_PATH)}"])
+    _stop_agent_server(driver)
+    _seed_hostile_mode(dtu_id)
+
+    project_dir = f"{PROJECT_DIR}"
+    driver.run_command(["bash", "-lc", f"mkdir -p {shlex.quote(project_dir)}"])
+    result = driver.run_command(
+        [
+            "bash",
+            "-lc",
+            f"cd {shlex.quote(project_dir)} && "
+            f"amplifier-opencode --yes prepare --project-dir {shlex.quote(project_dir)}",
+        ]
+    )
+    try:
+        yield result
+    finally:
+        # Leave a clean slate: remove the seed and any file the (pre-fix) bridge
+        # generated for it, so a later suite/run never observes a stale artifact.
+        driver.run_command(["bash", "-lc", f"rm -f {shlex.quote(HOSTILE_MODE_SEED_PATH)}"])
+        driver.run_command(["bash", "-lc", f"rm -f {shlex.quote(REFUSED_AGENT_PATH)}"])

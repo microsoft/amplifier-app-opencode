@@ -872,12 +872,13 @@ def fetch_modes(base_url: str, api_key: str) -> list[dict[str, Any]]:
     Unlike skills there is no server-side filter -- /v1/modes already returns
     exactly the modes we want to surface (all shipped/discovered modes).
 
-    Names are validated by the same shared :func:`_usable_bridge_rows` the skills
-    bridge uses, so the two faces cannot drift on what they accept. A mode's name is
-    a ``.md`` file stem server-side, so it cannot contain ``/`` on POSIX -- but it CAN
-    be ``..`` or contain a backslash (which traverses on Windows), and
-    ``MODE_AGENT_PREFIX`` offers no protection since ``amplifier-../../evil`` still
-    resolves through the ``..`` segments.
+    A mode's ``name`` becomes a FILENAME downstream (``amplifier-<name>.md``), so rows
+    carrying an unsafe name are dropped here via the shared :func:`_usable_bridge_rows` --
+    the SAME choke point :func:`fetch_skills` uses, so the two faces cannot drift on what
+    they accept. A mode's name is a ``.md`` file stem server-side, so it cannot contain
+    ``/`` on POSIX -- but it CAN be ``..`` or contain a backslash (which traverses on
+    Windows), so the shared validator still has real work to do even though no full
+    relative-path payload is constructible through this face.
 
     Every surviving row is passed through :func:`_normalized_bridge_row`, so callers can
     rely on ``source`` being a ``str`` and ``shadowed`` being a list of
@@ -898,12 +899,7 @@ def fetch_modes(base_url: str, api_key: str) -> list[dict[str, Any]]:
     data = body.get("data", [])
     if not isinstance(data, list):
         return []
-    # Keep only well-formed rows that at least carry a usable name.
-    return [
-        _normalized_bridge_row(m)
-        for m in data
-        if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]
-    ]
+    return [_normalized_bridge_row(row) for row in _usable_bridge_rows(data, "modes")]
 
 
 def resolve_agent_dir(project_dir: Path | None) -> Path:

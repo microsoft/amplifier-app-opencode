@@ -1,0 +1,12 @@
+---
+name: {NAME}
+description: E2E bridge probe skill; verifies the skills-to-command bridge end-to-end.
+user-invocable: true
+disable-model-invocation: true
+---
+# E2E Bridge Probe Skill ({NAME})
+
+This skill exists only so its name and description travel through GET /v1/skills into the
+amplifier-opencode launcher's command-file bridge. It is never invoked -- the bridge suite
+asserts on the generated `.opencode/command/{NAME}.md` file and ownership manifest, not on
+this body.

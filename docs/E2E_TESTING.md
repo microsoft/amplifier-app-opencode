@@ -41,12 +41,21 @@ tests/e2e/
       fixtures/*.md.tmpl         # seed skill/mode file templates
 ```
 
-Suites today: `chat`, `modes`, `shadowing`, `skills`, `traversal`. `chat`, `modes`, and
-`skills` follow the `cases.py` + `test_<name>.py` TUI shape above. `shadowing` and
-`traversal` are non-TUI: there's nothing to read off a screen, so their `conftest.py`
-seeds files from `fixtures/*.md.tmpl`, drives `amplifier-opencode prepare` via
+Suites today:
+
+```
+TUI      chat, modes, skills
+non-TUI  agent_integration, bridge, cli, config, shadowing, traversal
+```
+
+`chat`, `modes`, and `skills` follow the `cases.py` + `test_<name>.py` TUI shape above.
+The rest are non-TUI: there's nothing to read off a screen, so their `conftest.py` seeds
+files from `fixtures/*.md.tmpl` where needed, drives `amplifier-opencode prepare` via
 `driver.run_command`, and the tests assert on its stdout and the resulting filesystem
-state.
+state. `prepare` runs the whole check, start, discover, write, and bridge pipeline
+without launching the TUI, which is what makes those suites fast.
+
+Run `uv run python tests/e2e/cli.py list` for the authoritative list.
 
 Framework code is the reusable half; `suites/` is where features add tests. To test a
 new area, add a `suites/<name>/` package. Nothing in `framework/` needs to change.
