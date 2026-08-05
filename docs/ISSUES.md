@@ -290,8 +290,8 @@ applying it to any other host is the actual defect.
 The seven `tests/test_*.py` modules (`test_host_config.py`,
 `test_modes_bridge.py`, `test_skills_bridge.py`, `test_prereqs.py`,
 `test_onboarding.py`, `test_platform_utils.py`, `test_version.py`) were
-deleted once the e2e tier reached 54 passing tests across the non-TUI
-suites. The behaviors below had coverage **only** from those mocked unit
+deleted once the e2e tier covered the contracts they approximated. The
+behaviors below had coverage **only** from those mocked unit
 tests and now have **no automated coverage at all**. This is a deliberate,
 recorded trade -- not an oversight -- made because a test that reaches
 inside the tool (monkeypatching its own internals) asserts something no
@@ -397,34 +397,37 @@ work would look like.
   `get_self_install_info`, `update_opencode`, `_run_bash_pipe`,
   `ensure_prerequisites`'s false branch): no e2e suite exercises the
   `update` subcommand at all today. Would take: a new `update` e2e suite.
+  See "Highest risk" below; this is the top entry on this list, not just
+  another bullet.
 - **`--version`'s missing-agent and below-minimum-floor renderings**
   (`test_version.py`, 2 of 3 cases): the DTU always has a current,
   floor-satisfying agent installed, so only the "present and sufficient"
   line shape is ever produced. Would take: a scenario with amplifier-agent
   either uninstalled or downgraded below `MIN_AGENT_VERSION`.
-- **`onboarding.py` in its entirety** (`test_onboarding.py`, 8 cases,
-  including secret-redaction): no e2e suite ever exercises the onboarding
-  wizard, because every DTU scenario starts with a resolvable
-  `ANTHROPIC_API_KEY` already present, so `needs_onboarding()` is always
-  `False` and the wizard path never runs. See the risk call-out below.
+- **Most of `onboarding.py`**: uncovered by any e2e suite are the success
+  path (`auth set` exits 0 and the re-verify confirms resolvability), the
+  `_auth_set` timeout and `OSError` branches, the "no value entered" and
+  "no endpoint entered" skip branches, the azure-openai endpoint prompt,
+  the non-interactive guidance-and-return path, and a provider menu with
+  more than one entry. Each would take the fake-agent-on-PATH technique
+  `tests/e2e/suites/onboarding/` uses, tuned to a different fake response.
 
-#### Highest risk: `onboarding._auth_set()`'s secret redaction
+#### Highest risk: the `update` subcommand has zero e2e exercise
 
-**Confirmed as the highest-risk gap.** `test_auth_set_timeout_does_not_leak_secret`
-and `test_auth_set_failure_redacts_secret_from_agent_output` were the only
-tests anywhere in the deleted tier -- or in the surviving e2e tier -- that
-guard against a provider credential reaching stdout in plaintext:
-`_auth_set` calls `amplifier-agent auth set <provider> <key>` as a
-subprocess with the key on the argv, and on a timeout or a non-zero exit
-whose `stderr` echoes that argv back, the wizard must scrub the key before
-printing anything to the user's terminal. With the unit tier gone, a
-regression that removes or breaks that scrubbing would print a live API
-key to stdout, and nothing in the e2e tier would catch it: onboarding is
-never invoked (every DTU scenario starts with a resolvable provider), so
-this isn't a case of a weaker substitute test standing guard -- it is zero
-coverage of a plaintext-secret-leak class of defect. This is a materially
-different kind of gap from the others above, which are mostly functional
-or cosmetic contract narrowing; this one is a security regression with no
-automated detection at any tier. Re-opening this cold should be the first
-priority if `onboarding.py` is ever touched again, ahead of any of the
-functional gaps above.
+The largest "no automated coverage at any tier" gap is the `update`
+subcommand end to end
+(`cli._run_update`, `prereqs.get_self_install_info`, `update_opencode`,
+`_run_bash_pipe`, and `ensure_prerequisites`'s false branch). No e2e suite
+ever invokes `amplifier-opencode update` -- every DTU scenario starts
+already-installed and never re-runs it. Unlike the narrower behavior-shape
+gaps listed above (which mostly narrow an already-exercised contract),
+`update` is a whole user-facing command path -- the one command every real
+user runs to refresh their stack, which also force-heals `amplifier-agent`
+to the version floor -- with zero automated exercise anywhere at any tier.
+A regression here (a broken `--force`/editable-install guard, a broken
+force-reinstall fallback, a broken opt-out prompt for `--no-opencode`)
+would ship silently. What sets it apart from the narrower gaps above is
+that it is a real, recurring, user-facing code path with no coverage at
+all, rather than a contract that is merely exercised too weakly. Re-opening
+this cold should be the next priority if this area is touched again, ahead
+of any of the functional gaps above.

@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Fake ``amplifier-agent`` CLI, used ONLY by the onboarding e2e suite.
+
+Never touches the real amplifier-agent install: it is written to a scratch directory
+that this suite prepends to PATH for exactly one command, then removes. It understands
+just the three invocations ``onboarding.py`` and ``prereqs.py`` make during ``setup``:
+
+  --version                  print a version at/above prereqs.MIN_AGENT_VERSION, so the
+                              preflight version-floor check in ``ensure_agent`` passes
+  providers list --json      report exactly one provider ("anthropic"), NOT resolvable,
+                              so ``needs_onboarding()`` returns True and the wizard runs
+  auth set <id> --stdin      read the secret from stdin (mirroring the real ``--stdin``
+                              contract) and ECHO IT BACK on stderr, then exit non-zero --
+                              simulating an agent that leaks the key in its own error
+                              text. This is exactly the scenario ``_auth_set``'s
+                              defense-in-depth scrubbing must catch before printing.
+
+Anything else exits 1 with a diagnostic on stderr rather than hanging or crashing, so an
+unexpected call from a future onboarding.py change fails loud instead of silently.
+"""
+import sys
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if argv[:1] == ["--version"]:
+        print("amplifier-agent, version __VERSION__")
+        return 0
+    if argv[:2] == ["providers", "list"]:
+        print(
+            '{"providers": [{"name": "anthropic", "resolvable": false, '
+            '"env_var": "ANTHROPIC_API_KEY", "source": null}]}'
+        )
+        return 0
+    if argv[:2] == ["auth", "set"]:
+        secret = sys.stdin.read()
+        sys.stderr.write("error: upstream rejected credential " + secret + "\n")
+        return 1
+    sys.stderr.write("fake-amplifier-agent: unhandled args " + repr(argv) + "\n")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
