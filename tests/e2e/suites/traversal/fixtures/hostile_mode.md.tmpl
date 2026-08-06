@@ -1,0 +1,13 @@
+---
+mode:
+  name: "{NAME}"
+  description: E2E adversarial probe; its NAME is a value the skills face's is_safe_bridge_name would reject (the literal ".."), not a real mode name.
+  default_action: allow
+  tools:
+    safe: [read_file]
+---
+# E2E Mode-Face Name-Safety Probe
+
+This mode exists only so that its NAME travels through GET /v1/modes into the
+amplifier-opencode launcher's mode-agent bridge. It is never activated; the test
+asserts on the launcher's refusal (or lack of refusal) of this name, not on this body.

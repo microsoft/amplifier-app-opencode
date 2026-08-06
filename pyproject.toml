@@ -17,6 +17,9 @@ amplifier-opencode = "amplifier_app_opencode.cli:main"
 [dependency-groups]
 dev = [
   "pytest>=8.4",
+  # Lint and format. `make check` and `make fmt` are the local gate; there is no
+  # CI in this repo, so the gate has to be runnable from a clean checkout.
+  "ruff>=0.9",
   # AI-user judge. Uses Anthropic native structured outputs (output_config.format),
   # which is GA in recent SDKs; pinned to a version verified to support it. judge.py
   # falls back to httpx (a runtime dep) when `anthropic` is not importable.
