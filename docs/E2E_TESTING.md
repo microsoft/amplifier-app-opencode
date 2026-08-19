@@ -45,7 +45,7 @@ Suites today:
 
 ```
 TUI      chat, modes, skills
-non-TUI  agent_integration, bridge, cli, config, shadowing, traversal
+non-TUI  agent_integration, bridge, cli, config, prompt_cache, shadowing, traversal
 ```
 
 `chat`, `modes`, and `skills` follow the `cases.py` + `test_<name>.py` TUI shape above.
