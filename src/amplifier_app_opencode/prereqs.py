@@ -52,27 +52,36 @@ OPENCODE_BIN = "opencode"
 OPENCODE_INSTALL_SH = "https://opencode.ai/install"
 OPENCODE_NPM_PACKAGE = "opencode-ai"
 
-# Minimum amplifier-agent version amplifier-opencode requires. >= 0.14.0 is the
-# first version whose `serve` lifecycle is correct on Windows. We drive `serve`
-# for every turn, and below it three POSIX assumptions were wrong there. The
-# damaging one: `os.kill(pid, 0)` was used as a benign liveness probe, but on
-# Windows CPython maps `CTRL_C_EVENT` to `GenerateConsoleCtrlEvent`, and since
-# `CTRL_C_EVENT == 0`, signal 0 delivers a real console Ctrl+C to the target's
-# process group -- so `serve status` could interrupt the very server it was
-# reporting on. `signal.SIGKILL` also does not exist on Windows and raised
-# `AttributeError` when escalating a stop, and `start_new_session=True` is a
-# POSIX-only way to detach a restart. 0.14.0 additionally stops refusing to
-# write `serve.json` on Windows, where the 0600/0700 permission verification
-# could never pass against NTFS.
-# (0.12.0 remains the floor for `provider.config` being honoured from the host
-# config we pass via `--host-config`, without which `serve` dropped that block
-# on every turn and `debug.rawLlmPayloads` was rejected as an unknown key;
-# 0.11.0 for namespaced reseller model ids (`github-copilot/<model>`), without
-# which Copilot's `claude-sonnet-5` collides with the native anthropic
-# provider's; 0.10.0 for `GET /v1/skills` and `GET /v1/modes`, which the skills
-# and modes bridges read; 0.9.3 for `auth set --stdin`, which onboarding uses to
-# hand the provider key to the agent off-argv. 0.14.0 subsumes all four.)
-MIN_AGENT_VERSION = "0.14.0"
+# Minimum amplifier-agent version amplifier-opencode requires. >= 0.14.1 is the
+# first version where a `delegate` call does not hang. On the HTTP face we drive
+# for every turn, provider selection is per request: the mount plan's provider
+# list is narrowed to the one the wire `model` field selects, then restored so
+# the next request starts clean. Below 0.14.1 that restore mutated the mount plan
+# in place, and the kernel holds it by reference, so it also swapped the live
+# session's config back to every provider in the bundle. Sub-sessions are built
+# from the parent session's config, so each `delegate` re-mounted the full list
+# instead of the selected provider -- and github-copilot, which we ship, runs an
+# interactive device-code login inside `mount()`. With no cached token the
+# delegated turn blocked on an unbounded authorization poll until the code
+# expired upstream: roughly fifteen minutes per `delegate`, during which the
+# stream carried only keepalives and the turn looked hung.
+# (0.14.0 remains the floor for the `serve` lifecycle being correct on Windows,
+# where three POSIX assumptions were wrong -- the damaging one being
+# `os.kill(pid, 0)` as a liveness probe, since Windows CPython maps
+# `CTRL_C_EVENT` to `GenerateConsoleCtrlEvent` and `CTRL_C_EVENT == 0`, so
+# signal 0 delivered a real console Ctrl+C to the target's process group and
+# `serve status` could interrupt the very server it was reporting on; it also
+# stopped refusing to write `serve.json`, whose 0600/0700 permission
+# verification could never pass against NTFS. 0.12.0 for `provider.config` being
+# honoured from the host config we pass via `--host-config`, without which
+# `serve` dropped that block on every turn and `debug.rawLlmPayloads` was
+# rejected as an unknown key; 0.11.0 for namespaced reseller model ids
+# (`github-copilot/<model>`), without which Copilot's `claude-sonnet-5` collides
+# with the native anthropic provider's; 0.10.0 for `GET /v1/skills` and
+# `GET /v1/modes`, which the skills and modes bridges read; 0.9.3 for
+# `auth set --stdin`, which onboarding uses to hand the provider key to the agent
+# off-argv. 0.14.1 subsumes all five.)
+MIN_AGENT_VERSION = "0.14.1"
 # The silent, launch-time auto-install/self-heal targets this exact known-good
 # git tag rather than a moving branch, so a reliability tool never drags users
 # onto un-vetted ``main``. Kept in lockstep with MIN_AGENT_VERSION: to adopt a
