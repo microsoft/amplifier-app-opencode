@@ -52,8 +52,20 @@ OPENCODE_BIN = "opencode"
 OPENCODE_INSTALL_SH = "https://opencode.ai/install"
 OPENCODE_NPM_PACKAGE = "opencode-ai"
 
-# Minimum amplifier-agent version amplifier-opencode requires. >= 0.14.1 is the
-# first version where a `delegate` call does not hang. On the HTTP face we drive
+# Minimum amplifier-agent version amplifier-opencode requires. >= 0.15.0 is the
+# first version where the agent owns its own storage tree: it binds
+# ``AMPLIFIER_HOME`` to ``~/.amplifier-agent/foundation`` before importing
+# amplifier_foundation, so module clones, provider rate-limit state and the
+# ChatGPT OAuth token no longer land in ``~/.amplifier`` -- a directory owned by
+# amplifier-app-cli and shared, unnamespaced, with every other Amplifier
+# application on the machine. On a host that runs both, the two applications
+# were reading and writing the same clone directories. 0.15.0 also resolves the
+# floating ``@main`` module refs to concrete commits before preparing the
+# bundle, so an upstream module fix reaches an existing install instead of being
+# pinned forever to whatever ``main`` pointed at on the day it was first set up;
+# a machine below this floor keeps serving frozen module code no reinstall can
+# refresh.
+# (0.14.1 remains the floor for a `delegate` call not hanging. On the HTTP face we drive
 # for every turn, provider selection is per request: the mount plan's provider
 # list is narrowed to the one the wire `model` field selects, then restored so
 # the next request starts clean. Below 0.14.1 that restore mutated the mount plan
@@ -80,8 +92,8 @@ OPENCODE_NPM_PACKAGE = "opencode-ai"
 # with the native anthropic provider's; 0.10.0 for `GET /v1/skills` and
 # `GET /v1/modes`, which the skills and modes bridges read; 0.9.3 for
 # `auth set --stdin`, which onboarding uses to hand the provider key to the agent
-# off-argv. 0.14.1 subsumes all five.)
-MIN_AGENT_VERSION = "0.14.1"
+# off-argv. 0.15.0 subsumes all of the above.)
+MIN_AGENT_VERSION = "0.15.0"
 # The silent, launch-time auto-install/self-heal targets this exact known-good
 # git tag rather than a moving branch, so a reliability tool never drags users
 # onto un-vetted ``main``. Kept in lockstep with MIN_AGENT_VERSION: to adopt a
