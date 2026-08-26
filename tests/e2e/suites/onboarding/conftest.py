@@ -57,7 +57,7 @@ FAKE_BIN_PATH = f"{FAKE_BIN_DIR}/amplifier-agent"
 SENTINEL = "sk-e2e-SENTINEL-DO-NOT-LEAK-abc123"
 
 # Version the fake agent reports for ``--version``. Comfortably above
-# ``prereqs.MIN_AGENT_VERSION`` (0.15.1 as of this writing) so the preflight's
+# ``prereqs.MIN_AGENT_VERSION`` (0.16.0 as of this writing) so the preflight's
 # version-floor check passes without this suite needing to track that constant.
 FAKE_AGENT_VERSION = "99.0.0"
 
