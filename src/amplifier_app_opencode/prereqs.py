@@ -52,18 +52,29 @@ OPENCODE_BIN = "opencode"
 OPENCODE_INSTALL_SH = "https://opencode.ai/install"
 OPENCODE_NPM_PACKAGE = "opencode-ai"
 
-# Minimum amplifier-agent version amplifier-opencode requires. 0.16.0 is an
-# adoption bump rather than a capability requirement: nothing here depends on
-# what it changed. That release renamed the engine's built-in bundle
+# Minimum amplifier-agent version amplifier-opencode requires. 0.17.0 is a
+# correctness bump: below it, the token counts this application puts in front of
+# users are wrong. The engine's `extract_usage()` computed the OpenAI-wire
+# `usage.prompt_tokens` as `inputTokens + cacheReadTokens + cacheWriteTokens`, on
+# the premise that the three are disjoint buckets. They are not -- per
+# amplifier-core's `PROVIDER_CONTRACT.md`, `inputTokens` is the gross input total
+# and already contains the cache reads, so the cached portion was counted twice.
+# On a cache-heavy turn, which is the normal case in an agent loop, that roughly
+# doubles the reported prompt. That figure arrives on `/v1/chat/completions`, the
+# endpoint we drive for every turn, and opencode's TUI displays it; nothing in
+# this repo parses the `usage` block itself, which is precisely why the bad
+# number passed straight through to the user.
+# Note that `PROTOCOL_VERSION` also moved (0.3.0 -> 0.4.0) in that release, but
+# it does not gate this application: we drive the HTTP face only and never spawn
+# through a wrapper SDK, so there is no stdio handshake here to fail.
+# (0.16.0 was an adoption bump rather than a capability requirement: nothing here
+# depended on what it changed. That release renamed the engine's built-in bundle
 # (`amplifier-agent-behavioral-anchor` -> `amplifier-agent-anchors`) and dropped
-# descriptive prose from the head of its system prompt. Neither reaches this
-# application: the HTTP face, `GET /v1/models`, `/v1/skills`, `/v1/modes`,
-# host-config handling passed through `--host-config`, `PROTOCOL_VERSION`, and
-# the `run`/`serve` contract are all unchanged, and nothing in this repo names
-# that bundle. The floor moves so AGENT_PINNED_REF, the exact tag the
-# launch-time self-heal installs, tracks the current engine instead of drifting
-# a release behind.
-# (0.15.1 was likewise an adoption bump: it taught `serve` to fall back to
+# descriptive prose from the head of its system prompt. Neither reached this
+# application, and nothing in this repo names that bundle. The floor moved so
+# AGENT_PINNED_REF, the exact tag the launch-time self-heal installs, tracked the
+# current engine instead of drifting a release behind.
+# 0.15.1 was likewise an adoption bump: it taught `serve` to fall back to
 # `$AMPLIFIER_AGENT_CONFIG` when `$AMPLIFIER_AGENT_HTTP_CONFIG_PATH` is unset,
 # and we pass `--host-config` explicitly on every launch, which outranks both
 # variables -- so the repaired path was one this application never takes.
@@ -107,7 +118,7 @@ OPENCODE_NPM_PACKAGE = "opencode-ai"
 # `GET /v1/modes`, which the skills and modes bridges read; 0.9.3 for
 # `auth set --stdin`, which onboarding uses to hand the provider key to the agent
 # off-argv. 0.15.0 subsumes all of the above.)
-MIN_AGENT_VERSION = "0.16.0"
+MIN_AGENT_VERSION = "0.17.0"
 # The silent, launch-time auto-install/self-heal targets this exact known-good
 # git tag rather than a moving branch, so a reliability tool never drags users
 # onto un-vetted ``main``. Kept in lockstep with MIN_AGENT_VERSION: to adopt a
