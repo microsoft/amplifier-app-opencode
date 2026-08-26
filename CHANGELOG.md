@@ -10,6 +10,22 @@ in 0.2.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **Agent floor and pinned ref raised to 0.16.0.** This is an adoption bump, not a
+  capability requirement: nothing here depends on what 0.16.0 changed. That release
+  renamed the engine's built-in bundle (`amplifier-agent-behavioral-anchor` →
+  `amplifier-agent-anchors`) and dropped descriptive prose from the head of its system
+  prompt. Neither reaches this application — the HTTP face, `GET /v1/models`,
+  `/v1/skills`, `/v1/modes`, host-config handling passed through `--host-config`,
+  `PROTOCOL_VERSION`, and the `run`/`serve` contract are all unchanged, and nothing here
+  names that bundle. The floor moves so `AGENT_PINNED_REF` — the exact tag the
+  launch-time self-heal installs — tracks the current engine instead of drifting a
+  release behind.
+
+  Existing installs below the floor are healed at next launch: the preflight forces a
+  reinstall to `v0.16.0` rather than trusting the agent's own `update`.
+
 ## [0.4.0] — 2026-07-29
 
 ### Changed

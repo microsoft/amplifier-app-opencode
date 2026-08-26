@@ -52,15 +52,22 @@ OPENCODE_BIN = "opencode"
 OPENCODE_INSTALL_SH = "https://opencode.ai/install"
 OPENCODE_NPM_PACKAGE = "opencode-ai"
 
-# Minimum amplifier-agent version amplifier-opencode requires. 0.15.1 is an
+# Minimum amplifier-agent version amplifier-opencode requires. 0.16.0 is an
 # adoption bump rather than a capability requirement: nothing here depends on
-# what it changed. That release taught `serve` to fall back to
+# what it changed. That release renamed the engine's built-in bundle
+# (`amplifier-agent-behavioral-anchor` -> `amplifier-agent-anchors`) and dropped
+# descriptive prose from the head of its system prompt. Neither reaches this
+# application: the HTTP face, `GET /v1/models`, `/v1/skills`, `/v1/modes`,
+# host-config handling passed through `--host-config`, `PROTOCOL_VERSION`, and
+# the `run`/`serve` contract are all unchanged, and nothing in this repo names
+# that bundle. The floor moves so AGENT_PINNED_REF, the exact tag the
+# launch-time self-heal installs, tracks the current engine instead of drifting
+# a release behind.
+# (0.15.1 was likewise an adoption bump: it taught `serve` to fall back to
 # `$AMPLIFIER_AGENT_CONFIG` when `$AMPLIFIER_AGENT_HTTP_CONFIG_PATH` is unset,
 # and we pass `--host-config` explicitly on every launch, which outranks both
-# variables -- so the repaired path is one this application never takes. The
-# floor moves so AGENT_PINNED_REF, the exact tag the launch-time self-heal
-# installs, tracks the current engine instead of drifting a release behind.
-# (0.15.0 remains the floor for the agent owning its own storage tree: it binds
+# variables -- so the repaired path was one this application never takes.
+# 0.15.0 remains the floor for the agent owning its own storage tree: it binds
 # ``AMPLIFIER_HOME`` to ``~/.amplifier-agent/foundation`` before importing
 # amplifier_foundation, so module clones, provider rate-limit state and the
 # ChatGPT OAuth token no longer land in ``~/.amplifier`` -- a directory owned by
@@ -100,7 +107,7 @@ OPENCODE_NPM_PACKAGE = "opencode-ai"
 # `GET /v1/modes`, which the skills and modes bridges read; 0.9.3 for
 # `auth set --stdin`, which onboarding uses to hand the provider key to the agent
 # off-argv. 0.15.0 subsumes all of the above.)
-MIN_AGENT_VERSION = "0.15.1"
+MIN_AGENT_VERSION = "0.16.0"
 # The silent, launch-time auto-install/self-heal targets this exact known-good
 # git tag rather than a moving branch, so a reliability tool never drags users
 # onto un-vetted ``main``. Kept in lockstep with MIN_AGENT_VERSION: to adopt a
