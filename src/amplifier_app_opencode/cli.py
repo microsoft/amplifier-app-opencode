@@ -75,7 +75,10 @@ DEFAULT_WORKSPACE = "opencode"
 # under 5s and exit the poll loop early.
 DEFAULT_SERVER_READY_TIMEOUT_S = 120.0
 DEFAULT_SERVER_PROBE_TIMEOUT_S = 2.0
-DEFAULT_PROVIDER_ID = "amplifier"
+# The "github-copilot" substring is load-bearing: opencode only enables raw-usage
+# passthrough (which carries amplifier-agent's exact copilot_usage) for provider
+# ids that contain it.
+DEFAULT_PROVIDER_ID = "github-copilot-amplifier"
 DEFAULT_PROVIDER_NAME = "Amplifier"
 DEFAULT_PROVIDER_NPM = "@ai-sdk/openai-compatible"
 # Opt-in ceiling for the advertised per-model context window. None == forward
@@ -478,6 +481,21 @@ def write_opencode_config(
         raise click.ClickException(
             f"Existing {config_path}.provider is not a dict; refusing to overwrite."
         )
+
+    # Drop any stale block this bridge previously wrote under a different id but the
+    # same baseURL, so an upgraded config doesn't keep a duplicate provider.
+    # Providers at any other baseURL are left untouched.
+    our_base_url = (provider.get("options") or {}).get("baseURL")
+    if our_base_url:
+        for stale_id in [
+            key
+            for key, block in existing["provider"].items()
+            if key != provider_id
+            and isinstance(block, dict)
+            and (block.get("options") or {}).get("baseURL") == our_base_url
+        ]:
+            del existing["provider"][stale_id]
+
     existing["provider"][provider_id] = provider
 
     # Atomic write: render to a sibling temp file, then os.replace() into place.
