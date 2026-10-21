@@ -25,7 +25,7 @@ COMMAND = "amplifier-opencode"
 DEFAULT_OPTIONS: dict[str, Any] = {
     "defaultModel": None,
     "setDefaultAgent": True,
-    "approvals": "allow",
+    "approvals": "opencode",
     "environment": {},
 }
 # The opencode integrations the plugin passes to Amplifier: the kind of stored credential it uses from each, and the

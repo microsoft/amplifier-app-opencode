@@ -105,6 +105,83 @@ class Twin:
         return target
 
 
+@dataclass(frozen=True)
+class Tui:
+    """opencode's TUI in a tmux session in the twin."""
+
+    twin: Twin
+    session: str
+
+    @classmethod
+    def start(cls, twin: Twin, directory: str, session: str) -> "Tui":
+        """The TUI in `directory`, on GPT 6.1 Sol through Amplifier with its medium reasoning variant."""
+        twin.check(
+            f"tmux kill-session -t {session} 2>/dev/null; tmux new-session -d -s {session} -x 160 -y 45 opencode",
+            workdir=directory,
+        )
+        tui = cls(twin, session)
+        assert wait_for(lambda: tui.shows("Amplifier ·"), timeout=120), tui.text()
+        if not tui.shows("Amplifier · GPT 6.1 Sol"):
+            # A new project starts on the agent's model, Amplifier default; /models picks another.
+            twin.check(f"tmux send-keys -t {session} -l /models")
+            tui.keys("Enter")
+            assert wait_for(lambda: tui.shows("Select model"), timeout=30), tui.text()
+            twin.check(f"tmux send-keys -t {session} -l 'gpt 6.1 sol'")
+
+            def first_is_amplifiers() -> bool:
+                lines = [line for line in tui.screen() if line]
+                found = [index for index, line in enumerate(lines) if line == "gpt 6.1 sol"]
+                return bool(found) and lines[found[0] + 1].split() == ["GPT", "6.1", "Sol", "Amplifier"]
+
+            assert wait_for(first_is_amplifiers, timeout=30), tui.text()
+            tui.keys("Enter")
+            assert wait_for(lambda: tui.shows("Amplifier · GPT 6.1 Sol"), timeout=30), tui.text()
+
+        def medium() -> bool:
+            if any(line.endswith("· medium") for line in tui.screen()):
+                return True
+            if tui.shows("Select variant"):
+                # Picking a model can ask for its variant.
+                twin.check(f"tmux send-keys -t {session} -l medium")
+                tui.keys("Enter")
+                return False
+            # ctrl+t cycles the model's reasoning variants.
+            tui.keys("C-t")
+            return False
+
+        assert wait_for(medium, timeout=30, interval=1), tui.text()
+        return tui
+
+    def screen(self) -> list[str]:
+        return [line.strip() for line in self.twin.run(f"tmux capture-pane -p -t {self.session}").stdout.splitlines()]
+
+    def text(self) -> str:
+        return "\n".join(self.screen())
+
+    def shows(self, text: str) -> bool:
+        return any(text in line for line in self.screen())
+
+    def keys(self, *keys: str) -> None:
+        self.twin.check(f"tmux send-keys -t {self.session} {' '.join(keys)}")
+
+    def send(self, prompt: str) -> None:
+        self.twin.check(f"tmux send-keys -t {self.session} -l {shlex.quote(prompt)}")
+        self.keys("Enter")
+
+    def idle(self) -> bool:
+        """Whether no turn runs: the footer offers no interrupt."""
+        return not self.shows("esc interrupt") and not self.shows("esc again to interrupt")
+
+    def close(self) -> None:
+        self.twin.run(f"tmux kill-session -t {self.session}")
+
+
+def latest_session(twin: Twin, directory: str) -> str:
+    """The id of the opencode session in `directory` updated last."""
+    listed = json.loads(twin.check("opencode session list --format json", workdir=directory))
+    return max((entry for entry in listed if entry["directory"] == directory), key=lambda entry: entry["updated"])["id"]
+
+
 def durable_sessions(sessions: Path) -> dict[str, dict]:
     """metadata.json of each durable Amplifier session in a pulled sessions directory, by session id."""
     found = {

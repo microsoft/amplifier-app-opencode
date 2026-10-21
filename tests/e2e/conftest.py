@@ -4,7 +4,7 @@ One universe per run, from the profile at `.agents/digital-twin-universe/opencod
 OPENAI_API_KEY are required; AMPLIFIER_AGENT_DIR names the amplifier-agent checkout served at its GitHub URL.
 
     make e2e                    every suite
-    make e2e SUITE=chat         one suite: install, chat, coding, continuity, or tui
+    make e2e SUITE=chat         one suite: install, chat, coding, tools, approvals, cancel, continuity, or tui
     E2E_KEEP=1 make e2e         leave the universe running and print its id
     E2E_UNIVERSE=<id> make e2e  run against a kept universe instead of launching one
     E2E_REF=<branch>            the branch to install (default: this checkout's branch)
@@ -95,7 +95,7 @@ def opencode(twin: Twin, connected: str) -> Twin:
     return twin
 
 
-SUITES = ("install", "chat", "coding", "continuity", "tui")
+SUITES = ("install", "chat", "coding", "tools", "approvals", "cancel", "continuity", "tui")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

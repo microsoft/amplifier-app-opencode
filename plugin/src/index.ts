@@ -2,21 +2,24 @@ import { createHash } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 import { type Connection, faceEnvironment, INTEGRATIONS } from "./credentials.ts"
 import { commandVersion, type Face, log, startFace } from "./face.ts"
-import {
-  DEFAULT_MODEL_KEY,
-  defaultModelKey,
-  type ModelEntry,
-  modelEntries,
-  sessionHeader,
-  titleFrom,
-} from "./mapping.ts"
-import { type Options, readOptions } from "./options.ts"
-import { CARRIER_COST, usageRewriter } from "./usage.ts"
+import { DEFAULT_MODEL_KEY, defaultModelKey, type ModelEntry, modelEntries, titleFrom } from "./mapping.ts"
+import { AmplifierLanguageModel, interrupt, PROVIDER } from "./language.ts"
+import { faceApprovals, type Options, readOptions } from "./options.ts"
+import { CARRIER_COST } from "./usage.ts"
 
 declare const AMPLIFIER_OPENCODE_VERSION: string
 
-const PROVIDER = "amplifier"
 const AGENT = "amplifier"
+/**
+ * The `amplifier` provider's AI SDK package: this file, which opencode imports for its `create` export. A package
+ * name would make opencode install it from npm.
+ */
+const PACKAGE = `aisdk:${import.meta.url}`
+
+/** The AI SDK provider opencode creates from PACKAGE. The `language` hook supplies each model. */
+export function createAmplifier(): Record<string, never> {
+  return {}
+}
 const SCOPE = { providerID: PROVIDER }
 
 /** The face the registrations show, if one runs, and the environment it was started with. */
@@ -46,7 +49,7 @@ const plugin: Plugin.Plugin = {
         command: options.command,
         directory,
         environment: resolved.environment,
-        approvals: options.approvals,
+        approvals: faceApprovals(options.approvals),
       }).catch((error: Error) => error),
     ])
     // Without a face the provider and agent stay hidden; connecting a provider in opencode starts it.
@@ -62,13 +65,13 @@ const plugin: Plugin.Plugin = {
     const live: Live = { face: undefined, entries: [], fingerprint: resolved.fingerprint }
     if (!(face instanceof Error)) show(live, face, options)
     try {
-      await register(ctx, live, options.defaultModel, options.setDefaultAgent, stale)
+      await register(ctx, live, options, stale)
     } catch (error) {
       live.face?.stop()
       throw error
     }
     const watching = new AbortController()
-    watchConnections(ctx, live, options, directory, watching.signal)
+    watchEvents(ctx, live, options, directory, watching.signal)
     return () => {
       watching.abort()
       live.face?.stop()
@@ -119,8 +122,11 @@ function show(live: Live, face: Face, options: Options): void {
   }
 }
 
-/** Restart the face when opencode's connections change the environment it runs with, and show its models. */
-function watchConnections(
+/**
+ * Restart the face when opencode's connections change the environment it runs with, and show its models. Stop the
+ * Amplifier turn of a session opencode interrupts.
+ */
+function watchEvents(
   ctx: Plugin.Context,
   live: Live,
   options: Options,
@@ -140,7 +146,7 @@ function watchConnections(
           command: options.command,
           directory,
           environment: resolved.environment,
-          approvals: options.approvals,
+          approvals: faceApprovals(options.approvals),
         })
         if (signal.aborted) {
           face.stop()
@@ -163,6 +169,7 @@ function watchConnections(
     try {
       for await (const event of ctx.event.subscribe({ signal })) {
         if (event.type === "credential.updated" || event.type === "credential.switched") refresh()
+        else if (event.type === "session.execution.interrupted") interrupt(event.data.sessionID)
       }
     } catch (error) {
       if (!signal.aborted) log(`stopped following opencode connections for ${directory}: ${(error as Error).message}`)
@@ -172,27 +179,37 @@ function watchConnections(
   refresh()
 }
 
-async function register(
-  ctx: Plugin.Context,
-  live: Live,
-  defaultModel: string | null,
-  setDefaultAgent: boolean,
-  stale: boolean,
-): Promise<void> {
+/**
+ * The amplifier agent's permissions. opencode's defaults decide Amplifier's effects, which ask as opencode's own tools
+ * do (`shell`, `edit`, `read`, `webfetch`, `mcp`, or the tool's name), and the user's permission rules follow these.
+ * opencode's own tools are never offered to the model; the ones whose actions Amplifier's effects do not share are
+ * denied as well.
+ */
+const PERMISSIONS = [
+  { action: "*", resource: "*", effect: "allow" },
+  { action: "read", resource: "*.env", effect: "ask" },
+  { action: "read", resource: "*.env.*", effect: "ask" },
+  { action: "read", resource: "*.env.example", effect: "allow" },
+  ...["glob", "grep", "websearch", "question", "todowrite", "subagent", "skill", "execute", "opencode_*"].map(
+    (action) => ({ action, resource: "*", effect: "deny" }),
+  ),
+]
+
+async function register(ctx: Plugin.Context, live: Live, options: Options, stale: boolean): Promise<void> {
+  const { defaultModel, setDefaultAgent } = options
   await ctx.provider.transform((providers) => {
     const face = live.face
     if (!face) return
     providers.update(PROVIDER, (provider) => {
       provider.name = stale ? "Amplifier (run: amplifier-opencode install)" : "Amplifier"
       provider.activation = "enabled"
-      provider.package = "@opencode/ai/providers/openai-compatible"
-      provider.settings = { baseURL: face.baseURL, apiKey: face.token }
+      provider.package = PACKAGE
     })
     for (const entry of live.entries) {
       providers.models.update(PROVIDER, entry.key, (model) => {
         model.modelID = entry.modelID as never
         model.name = entry.name
-        // The face takes no output limit. The usage rewrite makes the last message's tokens the context size and
+        // Amplifier sets its own output limit. A turn's usage makes the last message's tokens the context size and
         // carries the turn's cost in cache writes, which only this cost prices.
         model.limit = { context: entry.contextWindow ?? 0, output: 0 }
         model.cost = CARRIER_COST as never
@@ -218,16 +235,31 @@ async function register(
       agent.mode = "primary"
       agent.hidden = false
       agent.model = { providerID: PROVIDER, id: defaultModelKey(live.entries, defaultModel) } as never
-      // Amplifier runs its tools itself; opencode sends none and runs none.
-      agent.permissions = [{ action: "*", resource: "*", effect: "deny" }] as never
+      // opencode adds the user's permission rules after these.
+      const rules = agent.permissions as readonly { action: string; resource: string; effect: string }[]
+      const defaults = rules.findIndex((rule, index) => JSON.stringify(rule) !== JSON.stringify(PERMISSIONS[index]))
+      agent.permissions = [...PERMISSIONS, ...rules.slice(defaults < 0 ? rules.length : defaults)] as never
     })
     if (setDefaultAgent) agents.default(AGENT)
   })
 
-  await ctx.session.hook(
-    "model.request",
+  await ctx.aisdk.hook(
+    "sdk",
     (event) => {
-      if (event.kind === "primary") event.headers["Amplifier-Session-Id"] = sessionHeader(event.sessionID)
+      event.sdk ??= {}
+    },
+    SCOPE,
+  )
+
+  const asks = options.approvals === "opencode"
+  await ctx.aisdk.hook(
+    "language",
+    (event) => {
+      event.language = new AmplifierLanguageModel(String(event.model.modelID ?? event.model.id), {
+        face: () => live.face,
+        asks,
+        assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID as never }),
+      })
     },
     SCOPE,
   )
@@ -235,25 +267,8 @@ async function register(
   await ctx.session.hook(
     "context",
     (event) => {
-      // The face refuses output limits and tools; it runs Amplifier's own tools.
-      delete event.options.maxTokens
+      // Amplifier runs its own tools, so opencode offers none of its own.
       event.tools = {}
-    },
-    SCOPE,
-  )
-
-  await ctx.session.hook(
-    "http.response",
-    (event) => {
-      const { response } = event
-      if (!response.body || !response.headers.get("content-type")?.startsWith("text/event-stream")) return
-      const headers = new Headers(response.headers)
-      headers.delete("content-length")
-      event.response = new Response(response.body.pipeThrough(usageRewriter()), {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
-      })
     },
     SCOPE,
   )

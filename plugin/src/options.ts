@@ -2,10 +2,16 @@ import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 
+/**
+ * Who decides Amplifier's effects: `opencode` asks opencode's permissions before each one, `allow` runs them all, and
+ * `deny` refuses them all. `ask` is read as `opencode`.
+ */
+export type Approvals = "opencode" | "allow" | "deny"
+
 export interface Options {
   readonly defaultModel: string | null
   readonly setDefaultAgent: boolean
-  readonly approvals: "allow" | "deny"
+  readonly approvals: Approvals
   readonly environment: Readonly<Record<string, string>>
   readonly command: string
 }
@@ -13,9 +19,14 @@ export interface Options {
 export const DEFAULT_OPTIONS: Options = {
   defaultModel: null,
   setDefaultAgent: true,
-  approvals: "allow",
+  approvals: "opencode",
   environment: {},
   command: "amplifier-opencode",
+}
+
+/** The face's static approval policy for an `approvals` option; turns narrow `allow` by asking opencode. */
+export function faceApprovals(approvals: Approvals): "allow" | "deny" {
+  return approvals === "deny" ? "deny" : "allow"
 }
 
 export function configDirectory(): string {
@@ -53,6 +64,11 @@ export function parseOptions(raw: unknown): { options: Options; problems: string
       Object.values(input).every((item) => typeof item === "string"),
     DEFAULT_OPTIONS.environment,
   )
+  const approvals = pick(
+    "approvals",
+    (input): input is Approvals | "ask" => ["opencode", "ask", "allow", "deny"].includes(input as string),
+    DEFAULT_OPTIONS.approvals as Approvals | "ask",
+  )
   return {
     options: {
       defaultModel: pick("defaultModel", isString, DEFAULT_OPTIONS.defaultModel as string | null),
@@ -61,11 +77,7 @@ export function parseOptions(raw: unknown): { options: Options; problems: string
         (input): input is boolean => typeof input === "boolean",
         DEFAULT_OPTIONS.setDefaultAgent,
       ),
-      approvals: pick(
-        "approvals",
-        (input): input is "allow" | "deny" => input === "allow" || input === "deny",
-        DEFAULT_OPTIONS.approvals,
-      ),
+      approvals: approvals === "ask" ? "opencode" : approvals,
       environment,
       command: pick("command", isString, DEFAULT_OPTIONS.command),
     },

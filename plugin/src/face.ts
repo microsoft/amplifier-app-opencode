@@ -55,6 +55,7 @@ export interface FaceSettings {
   readonly command: string
   readonly directory: string
   readonly environment: NodeJS.ProcessEnv
+  /** The face's static approval policy. */
   readonly approvals: "allow" | "deny"
 }
 

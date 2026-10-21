@@ -59,7 +59,7 @@ The details of what changed are in [migrating from 0.4.x](docs/migrating-from-0.
 {
   "defaultModel": null,
   "setDefaultAgent": true,
-  "approvals": "allow",
+  "approvals": "opencode",
   "environment": {},
   "command": "amplifier-opencode"
 }
@@ -70,7 +70,8 @@ defaultModel      a model from /v1/models as <provider>/<model>, for example "op
                   Amplifier's default provider and model; null uses the first connected provider: OpenAI,
                   Anthropic, Google, ChatGPT, then GitHub Copilot
 setDefaultAgent   make amplifier the default agent
-approvals         "allow" runs Amplifier's tools; "deny" refuses every tool call
+approvals         "opencode" asks opencode's permissions before each Amplifier tool call; "allow" runs them
+                  all; "deny" refuses every tool call
 environment       variables added to Amplifier's environment; they override opencode connections
 command           the amplifier-opencode executable the plugin starts
 ```
@@ -86,10 +87,13 @@ Amplifier also reads its own settings from `~/.amplifier-agent/config.json` and 
 opencode loads the plugin from its plugins directory. For each opencode location, the plugin starts Amplifier's
 [HTTP face](https://github.com/microsoft/amplifier-agent/blob/main/docs/http/quickstart.md) on a local port with a
 random token, registers it as the `amplifier` provider, and adds the `amplifier` agent. Each opencode session maps to
-a durable Amplifier session. opencode's own tools are not offered to Amplifier models, so all tool work runs inside
-Amplifier, in the session's directory.
+a durable Amplifier session. Each opencode turn is one Amplifier turn.
+Amplifier's tool calls show as opencode tools (bash, read, write, edit, apply_patch, glob, grep, webfetch, websearch,
+task) that Amplifier already ran in the session's directory. opencode's permissions decide each call first: the `bash`
+key for commands, `edit` for file changes, `read` for reads and searches, `webfetch` for web requests, and `mcp` for MCP
+tools. Esc stops the turn.
 
-The plugin rewrites each turn's usage so opencode's context meter shows the size of Amplifier's last model request
+The plugin reports each turn's usage so opencode's context meter shows the size of Amplifier's last model request
 against the model's window, and its cost shows what Amplifier reports. opencode's own compaction keeps the transcript
 unchanged; Amplifier compacts its session itself.
 
