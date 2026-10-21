@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 import { type Connection, faceEnvironment, INTEGRATIONS } from "./credentials.ts"
-import { commandVersion, type Face, log, startFace } from "./face.ts"
+import { commandVersion, type Face, type FaceSettings, log, startFace } from "./face.ts"
+import { type FaceInputs, type McpConfig, mcpServers, NO_INPUTS, skillDirectories } from "./inputs.ts"
 import { DEFAULT_MODEL_KEY, defaultModelKey, type ModelEntry, modelEntries, titleFrom } from "./mapping.ts"
 import { AmplifierLanguageModel, interrupt, PROVIDER } from "./language.ts"
 import { faceApprovals, type Options, readOptions } from "./options.ts"
@@ -25,11 +26,18 @@ export function createAmplifier(): Record<string, never> {
 }
 const SCOPE = { providerID: PROVIDER }
 
-/** The face the registrations show, if one runs, and the environment it was started with. */
+/** The face the registrations show, if one runs, and the fingerprints of what it was started with. */
 interface Live {
   face: Face | undefined
   entries: ModelEntry[]
-  fingerprint: string
+  fingerprint: Fingerprint
+  /** Resolves once the face runs with opencode's current connections, skills, and MCP servers. */
+  ready(): Promise<void>
+}
+
+/** opencode's MCP server configs, as the latest MCP state rebuild listed them. */
+interface McpConfigs {
+  current: (readonly [string, McpConfig])[]
 }
 
 /**
@@ -43,17 +51,17 @@ const plugin: Plugin.Plugin = {
     const directory = ctx.location.directory
     const { options, problems } = readOptions()
     for (const problem of problems) log(problem)
-    const resolved = await environment(ctx, options)
-    logSources(directory, resolved.sources)
+    const mcp: McpConfigs = { current: [] }
+    // Configured servers are set by the time this plugin runs; a server a later transform removes is not listed.
+    await ctx.mcp.transform((servers) => {
+      mcp.current = servers.list().map(([name, config]) => [name, structuredClone(config) as McpConfig] as const)
+    })
+    const resolved = await resolve(ctx, options, mcp)
+    logSources(directory, resolved)
 
     const [installed, face] = await Promise.all([
       commandVersion(options.command, resolved.environment),
-      startFace({
-        command: options.command,
-        directory,
-        environment: resolved.environment,
-        approvals: faceApprovals(options.approvals),
-      }).catch((error: Error) => error),
+      launch(faceSettings(options, directory, resolved)).catch((error: Error) => error),
     ])
     // Without a face the provider and agent stay hidden; connecting a provider in opencode starts it.
     if (face instanceof Error) log(face.message)
@@ -65,7 +73,7 @@ const plugin: Plugin.Plugin = {
       )
     }
 
-    const live: Live = { face: undefined, entries: [], fingerprint: resolved.fingerprint }
+    const live: Live = { face: undefined, entries: [], fingerprint: resolved.fingerprint, ready: async () => {} }
     if (!(face instanceof Error)) show(live, face, options)
     try {
       await register(ctx, live, options, stale)
@@ -74,7 +82,7 @@ const plugin: Plugin.Plugin = {
       throw error
     }
     const watching = new AbortController()
-    watchEvents(ctx, live, options, directory, watching.signal)
+    watchEvents(ctx, live, options, directory, mcp, watching.signal)
     return () => {
       watching.abort()
       live.face?.stop()
@@ -82,13 +90,77 @@ const plugin: Plugin.Plugin = {
   },
 }
 
-/** The face's environment, its sources, and a fingerprint that changes when the environment does. */
-async function environment(ctx: Plugin.Context, options: Options) {
-  const resolved = faceEnvironment(process.env, await connections(ctx), options)
-  const fingerprint = createHash("sha256")
-    .update(JSON.stringify(Object.entries(resolved.environment).sort(([a], [b]) => a.localeCompare(b))))
-    .digest("hex")
-  return { ...resolved, fingerprint }
+/** Hashes of the face's environment and of its skills and MCP servers. */
+interface Fingerprint {
+  readonly environment: string
+  readonly inputs: string
+}
+
+interface Resolved {
+  readonly environment: NodeJS.ProcessEnv
+  readonly sources: Readonly<Record<string, string>>
+  readonly inputs: FaceInputs
+  readonly skipped: readonly string[]
+  readonly fingerprint: Fingerprint
+}
+
+/** The face's environment and its sources, and the skills and MCP servers opencode resolved for its agent. */
+async function resolve(ctx: Plugin.Context, options: Options, mcp: McpConfigs): Promise<Resolved> {
+  const { environment, sources } = faceEnvironment(process.env, await connections(ctx), options)
+  const [skills, servers] = await Promise.all([resolvedSkills(ctx), mcpStatuses(ctx)])
+  const { servers: mcp_servers, skipped } = mcpServers(mcp.current, servers)
+  const inputs: FaceInputs = { skills, mcp_servers }
+  const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
+  const fingerprint = {
+    environment: hash(Object.entries(environment).sort(([a], [b]) => a.localeCompare(b))),
+    inputs: hash(inputs),
+  }
+  return { environment, sources, inputs, skipped, fingerprint }
+}
+
+/** The directories of the skills opencode resolved for this location that Amplifier can load. */
+async function resolvedSkills(ctx: Plugin.Context): Promise<string[]> {
+  try {
+    return skillDirectories((await ctx.skill.list()).data)
+  } catch (error) {
+    log(`could not read the opencode skills: ${(error as Error).message}`)
+    return []
+  }
+}
+
+/** The status opencode reports for each MCP server it keeps. */
+async function mcpStatuses(ctx: Plugin.Context): Promise<Map<string, string>> {
+  try {
+    return new Map((await ctx.mcp.list()).data.map((server) => [server.name, server.status.status]))
+  } catch (error) {
+    log(`could not read the opencode MCP servers: ${(error as Error).message}`)
+    return new Map()
+  }
+}
+
+function faceSettings(options: Options, directory: string, resolved: Resolved): FaceSettings {
+  return {
+    command: options.command,
+    directory,
+    environment: resolved.environment,
+    approvals: faceApprovals(options.approvals),
+    inputs: resolved.inputs,
+  }
+}
+
+/**
+ * Start the face. A skill or MCP server Amplifier cannot load stops the face from starting, so a face that fails with
+ * them starts again without them.
+ */
+async function launch(settings: FaceSettings): Promise<Face> {
+  try {
+    return await startFace(settings)
+  } catch (error) {
+    const { skills, mcp_servers } = settings.inputs
+    if (!skills.length && !mcp_servers.length) throw error
+    log(`${(error as Error).message} Starting it without opencode's skills and MCP servers.`)
+    return startFace({ ...settings, inputs: NO_INPUTS })
+  }
 }
 
 /** The active opencode connection of each integration Amplifier can use, resolved to its credential. */
@@ -110,9 +182,13 @@ async function connections(ctx: Plugin.Context): Promise<Connection[]> {
   return found
 }
 
-function logSources(directory: string, sources: Readonly<Record<string, string>>): void {
-  const names = Object.entries(sources).map(([name, source]) => `${name} from ${source}`)
+function logSources(directory: string, resolved: Resolved): void {
+  const names = Object.entries(resolved.sources).map(([name, source]) => `${name} from ${source}`)
   log(`face environment for ${directory}: ${names.join(", ") || "no provider credentials"}`)
+  const { skills, mcp_servers } = resolved.inputs
+  const servers = mcp_servers.map((server) => server.name).join(", ") || "none"
+  log(`face inputs for ${directory}: ${skills.length} skill directories, MCP servers: ${servers}`)
+  if (resolved.skipped.length) log(`MCP servers left out for ${directory}: ${resolved.skipped.join(", ")}`)
 }
 
 function show(live: Live, face: Face, options: Options): void {
@@ -126,60 +202,113 @@ function show(live: Live, face: Face, options: Options): void {
 }
 
 /**
- * Restart the face when opencode's connections change the environment it runs with, and show its models. Stop the
- * Amplifier turn of a session opencode interrupts.
+ * Keep the face running with opencode's current connections, skills, and MCP servers: restart it when they change,
+ * and once when it exits on its own. Stop the Amplifier turn of a session opencode interrupts.
  */
 function watchEvents(
   ctx: Plugin.Context,
   live: Live,
   options: Options,
   directory: string,
+  mcp: McpConfigs,
   signal: AbortSignal,
 ): void {
   let queue = Promise.resolve()
-  const refresh = () => {
-    queue = queue
-      .then(async () => {
-        if (signal.aborted) return
-        const resolved = await environment(ctx, options)
-        if (signal.aborted || resolved.fingerprint === live.fingerprint) return
-        log(`opencode connections changed; restarting the face for ${directory}`)
-        logSources(directory, resolved.sources)
-        const face = await startFace({
-          command: options.command,
-          directory,
-          environment: resolved.environment,
-          approvals: faceApprovals(options.approvals),
-        })
-        if (signal.aborted) {
-          face.stop()
-          return
-        }
-        const previous = live.face
-        show(live, face, options)
-        live.fingerprint = resolved.fingerprint
-        await ctx.provider.reload()
-        await ctx.model.reload()
-        await ctx.agent.reload()
-        previous?.stop()
-      })
-      .catch((error: Error) =>
-        log(`${live.face ? "kept the running face" : "no face runs"} for ${directory}: ${error.message}`),
-      )
+  let waiting: Promise<void> | undefined
+  const enqueue = (work: () => Promise<void>): Promise<void> => {
+    queue = queue.then(work).catch((error: Error) => log(`could not update the face for ${directory}: ${error.message}`))
+    return queue
   }
+  const follow = (face: Face) =>
+    void face.crashed.then((reason) => {
+      if (live.face === face && !signal.aborted) restart(face, reason)
+    })
+
+  const swap = async (face: Face, fingerprint: Fingerprint) => {
+    if (signal.aborted) {
+      face.stop()
+      return
+    }
+    const previous = live.face
+    show(live, face, options)
+    live.fingerprint = fingerprint
+    follow(face)
+    await reload()
+    previous?.retire()
+  }
+  const reload = async () => {
+    await ctx.provider.reload()
+    await ctx.model.reload()
+    await ctx.agent.reload()
+  }
+
+  const update = async () => {
+    if (signal.aborted) return
+    const resolved = await resolve(ctx, options, mcp)
+    if (signal.aborted) return
+    const changed = [
+      ...(resolved.fingerprint.environment === live.fingerprint.environment ? [] : ["connections"]),
+      ...(resolved.fingerprint.inputs === live.fingerprint.inputs ? [] : ["skills or MCP servers"]),
+    ]
+    if (!changed.length) return
+    log(`opencode ${changed.join(" and ")} changed; restarting the face for ${directory}`)
+    logSources(directory, resolved)
+    try {
+      await swap(await launch(faceSettings(options, directory, resolved)), resolved.fingerprint)
+    } catch (error) {
+      log(`${live.face ? "kept the running face" : "no face runs"} for ${directory}: ${(error as Error).message}`)
+    }
+  }
+  /** Bring the face up to date; calls made while an update waits to run share it. */
+  const refresh = (): Promise<void> => {
+    waiting ??= enqueue(() => {
+      waiting = undefined
+      return update()
+    })
+    return waiting
+  }
+  const restart = (crashed: Face, reason: string) =>
+    enqueue(async () => {
+      if (live.face !== crashed || signal.aborted) return
+      log(`the face for ${directory} ${reason}; restarting it`)
+      const resolved = await resolve(ctx, options, mcp)
+      logSources(directory, resolved)
+      try {
+        await swap(await launch(faceSettings(options, directory, resolved)), resolved.fingerprint)
+      } catch (error) {
+        // As at setup: without a face the provider and agent stay hidden until opencode's inputs change.
+        log((error as Error).message)
+        live.face = undefined
+        live.entries = []
+        live.fingerprint = resolved.fingerprint
+        await reload()
+      }
+    })
+
+  live.ready = refresh
+  if (live.face) follow(live.face)
 
   void (async () => {
     try {
       for await (const event of ctx.event.subscribe({ signal })) {
-        if (event.type === "credential.updated" || event.type === "credential.switched") refresh()
-        else if (event.type === "session.execution.interrupted") interrupt(event.data.sessionID)
+        switch (event.type) {
+          case "credential.updated":
+          case "credential.switched":
+          case "skill.updated":
+          case "mcp.status.changed":
+          case "config.updated":
+            void refresh()
+            break
+          case "session.execution.interrupted":
+            interrupt(event.data.sessionID)
+        }
       }
     } catch (error) {
-      if (!signal.aborted) log(`stopped following opencode connections for ${directory}: ${(error as Error).message}`)
+      if (!signal.aborted) log(`stopped following opencode changes for ${directory}: ${(error as Error).message}`)
     }
   })()
-  // A connection made while the face started has no event left to announce it.
-  refresh()
+  // A connection made while the face started, or a skill plugin that ran after this one, has no event left.
+  void refresh()
 }
 
 /**
@@ -285,7 +414,7 @@ async function register(ctx: Plugin.Context, live: Live, options: Options, stale
     "language",
     (event) => {
       event.language = new AmplifierLanguageModel(String(event.model.modelID ?? event.model.id), {
-        face: () => live.face,
+        face: () => live.ready().then(() => live.face),
         asks,
         assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID as never }),
         observe: (sessionID, envelope) => {

@@ -15,7 +15,8 @@ export const PROVIDER = "amplifier"
 
 /** What the language model needs from the plugin: the running face, and opencode's permission check. */
 export interface LanguageContext {
-  face(): Face | undefined
+  /** The face to start a turn on, once a restart the plugin has scheduled is done. */
+  face(): Promise<Face | undefined>
   /** Whether turns ask opencode before each effect the face's policy allows. */
   readonly asks: boolean
   /** Resolves when opencode allows the permission; rejects when it is declined or cannot be asked. */
@@ -124,8 +125,24 @@ export class AmplifierLanguageModel implements LanguageModelV3 {
   }
 
   private async start(options: LanguageModelV3CallOptions, sessionID: string | undefined): Promise<Turn> {
-    const face = this.context.face()
+    const face = await this.context.face()
     if (!face) throw new Error("The Amplifier face is not running. Run: amplifier-opencode doctor")
+    // A face retired by a restart keeps running until its turns end.
+    const release = face.hold()
+    try {
+      return await this.run(face, release, options, sessionID)
+    } catch (error) {
+      release()
+      throw error
+    }
+  }
+
+  private async run(
+    face: Face,
+    release: () => void,
+    options: LanguageModelV3CallOptions,
+    sessionID: string | undefined,
+  ): Promise<Turn> {
     const effort = options.providerOptions?.[PROVIDER]?.reasoningEffort
     const body = {
       model: this.modelId,
@@ -212,6 +229,7 @@ export class AmplifierLanguageModel implements LanguageModelV3 {
       }
       turn.end()
       reader.releaseLock()
+      release()
     })()
     return turn
   }

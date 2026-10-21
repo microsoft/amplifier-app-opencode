@@ -52,7 +52,7 @@ test: plugin/node_modules ## Run the unit tests
 # End-to-end suites in a Digital Twin Universe (Docker, OPENAI_API_KEY): this checkout's branch and
 # AMPLIFIER_AGENT_DIR are served at their GitHub URLs and installed as the README says. SUITE=<name> runs
 # tests/e2e/test_<name>.py only; E2E_KEEP=1 leaves the universe running.
-e2e: ## Run the end-to-end suites (SUITE=install|chat|coding|tools|approvals|cancel|continuity|tui for one)
+e2e: ## Run the end-to-end suites (SUITE=install|chat|coding|tools|approvals|cancel|continuity|extensions|tui for one)
 	cd tests/e2e && AMPLIFIER_AGENT_DIR=$(abspath $(AMPLIFIER_AGENT_DIR)) \
 		uv run pytest -v --durations=0 $(if $(SUITE),test_$(SUITE).py)
 

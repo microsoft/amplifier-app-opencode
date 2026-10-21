@@ -3,10 +3,12 @@ import { createHash, randomBytes } from "node:crypto"
 import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs"
 import { createServer } from "node:net"
 import path from "node:path"
+import type { FaceInputs } from "./inputs.ts"
 import type { FaceModel } from "./mapping.ts"
 import { stateDirectory } from "./options.ts"
 
 const TOKEN_ENV = "AMPLIFIER_OPENCODE_FACE_TOKEN"
+const INPUTS_ENV = "AMPLIFIER_OPENCODE_FACE_INPUTS"
 const READY_TIMEOUT_MS = 180_000
 
 export function log(message: string): void {
@@ -48,6 +50,12 @@ export interface Face {
   readonly baseURL: string
   readonly token: string
   readonly models: readonly FaceModel[]
+  /** Settles with the reason when the face exits without being stopped. */
+  readonly crashed: Promise<string>
+  /** Keep the face running until the returned function is called, even once it is retired. */
+  hold(): () => void
+  /** Stop the face once nothing holds it. */
+  retire(): void
   stop(): void
 }
 
@@ -57,6 +65,7 @@ export interface FaceSettings {
   readonly environment: NodeJS.ProcessEnv
   /** The face's static approval policy. */
   readonly approvals: "allow" | "deny"
+  readonly inputs: FaceInputs
 }
 
 /** Start `<command> face` in `directory` and wait until it lists its models. */
@@ -71,16 +80,31 @@ export async function startFace(settings: FaceSettings): Promise<Face> {
   try {
     child = spawn(
       settings.command,
-      ["face", "--port", String(port), "--token-env", TOKEN_ENV, "--approvals", settings.approvals],
-      { cwd: settings.directory, env: { ...settings.environment, [TOKEN_ENV]: token }, stdio: ["ignore", output, output] },
+      [
+        "face",
+        ...["--port", String(port), "--token-env", TOKEN_ENV, "--inputs-env", INPUTS_ENV],
+        ...["--approvals", settings.approvals],
+      ],
+      {
+        cwd: settings.directory,
+        env: { ...settings.environment, [TOKEN_ENV]: token, [INPUTS_ENV]: JSON.stringify(settings.inputs) },
+        stdio: ["ignore", output, output],
+      },
     )
   } finally {
     closeSync(output)
   }
   let exited: string | undefined
+  let stopping = false
+  let crash: (reason: string) => void = () => {}
+  const crashed = new Promise<string>((resolve) => (crash = resolve))
   child.once("error", (error) => (exited = `could not run ${settings.command}: ${error.message}`))
-  child.once("exit", (code, signal) => (exited ??= `exited with ${signal ?? `code ${code}`}`))
+  child.once("exit", (code, signal) => {
+    exited ??= `exited with ${signal ?? `code ${code}`}`
+    if (!stopping) crash(exited)
+  })
   const stop = () => {
+    stopping = true
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM")
   }
   process.once("exit", stop)
@@ -94,14 +118,31 @@ export async function startFace(settings: FaceSettings): Promise<Face> {
       if (response.ok) {
         const body = (await response.json()) as { data: FaceModel[] }
         log(`face ready on port ${port} for ${settings.directory} (${body.data.length} models)`)
+        let holds = 0
+        let retired = false
+        const end = () => {
+          process.removeListener("exit", stop)
+          stop()
+        }
         return {
           baseURL,
           token,
           models: body.data,
-          stop: () => {
-            process.removeListener("exit", stop)
-            stop()
+          crashed,
+          hold: () => {
+            holds++
+            let held = true
+            return () => {
+              if (!held) return
+              held = false
+              if (--holds === 0 && retired) end()
+            }
           },
+          retire: () => {
+            retired = true
+            if (holds === 0) end()
+          },
+          stop: end,
         }
       }
       exited = `answered /v1/models with HTTP ${response.status}`

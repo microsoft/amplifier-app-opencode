@@ -159,6 +159,7 @@ function readOptions(file = optionsPath()) {
 
 // src/face.ts
 var TOKEN_ENV = "AMPLIFIER_OPENCODE_FACE_TOKEN";
+var INPUTS_ENV = "AMPLIFIER_OPENCODE_FACE_INPUTS";
 var READY_TIMEOUT_MS = 180000;
 function log(message) {
   try {
@@ -199,14 +200,30 @@ ${new Date().toISOString()} starting face on port ${port} in ${settings.director
 `);
   let child;
   try {
-    child = spawn(settings.command, ["face", "--port", String(port), "--token-env", TOKEN_ENV, "--approvals", settings.approvals], { cwd: settings.directory, env: { ...settings.environment, [TOKEN_ENV]: token }, stdio: ["ignore", output, output] });
+    child = spawn(settings.command, [
+      "face",
+      ...["--port", String(port), "--token-env", TOKEN_ENV, "--inputs-env", INPUTS_ENV],
+      ...["--approvals", settings.approvals]
+    ], {
+      cwd: settings.directory,
+      env: { ...settings.environment, [TOKEN_ENV]: token, [INPUTS_ENV]: JSON.stringify(settings.inputs) },
+      stdio: ["ignore", output, output]
+    });
   } finally {
     closeSync(output);
   }
   let exited;
+  let stopping = false;
+  let crash = () => {};
+  const crashed = new Promise((resolve) => crash = resolve);
   child.once("error", (error) => exited = `could not run ${settings.command}: ${error.message}`);
-  child.once("exit", (code, signal) => exited ??= `exited with ${signal ?? `code ${code}`}`);
+  child.once("exit", (code, signal) => {
+    exited ??= `exited with ${signal ?? `code ${code}`}`;
+    if (!stopping)
+      crash(exited);
+  });
   const stop = () => {
+    stopping = true;
     if (child.exitCode === null && child.signalCode === null)
       child.kill("SIGTERM");
   };
@@ -221,14 +238,34 @@ ${new Date().toISOString()} starting face on port ${port} in ${settings.director
       if (response.ok) {
         const body = await response.json();
         log(`face ready on port ${port} for ${settings.directory} (${body.data.length} models)`);
+        let holds = 0;
+        let retired = false;
+        const end = () => {
+          process.removeListener("exit", stop);
+          stop();
+        };
         return {
           baseURL,
           token,
           models: body.data,
-          stop: () => {
-            process.removeListener("exit", stop);
-            stop();
-          }
+          crashed,
+          hold: () => {
+            holds++;
+            let held = true;
+            return () => {
+              if (!held)
+                return;
+              held = false;
+              if (--holds === 0 && retired)
+                end();
+            };
+          },
+          retire: () => {
+            retired = true;
+            if (holds === 0)
+              end();
+          },
+          stop: end
         };
       }
       exited = `answered /v1/models with HTTP ${response.status}`;
@@ -240,6 +277,75 @@ ${new Date().toISOString()} starting face on port ${port} in ${settings.director
   stop();
   process.removeListener("exit", stop);
   throw new Error(`The Amplifier face for ${settings.directory} did not start (${exited ?? `no answer in ${READY_TIMEOUT_MS / 1000} s`}). ` + `See ${logFile}, and run: amplifier-opencode doctor`);
+}
+
+// src/inputs.ts
+import { readFileSync as readFileSync2 } from "fs";
+import path3 from "path";
+var NO_INPUTS = { skills: [], mcp_servers: [] };
+var FRONTMATTER = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/;
+function skillDirectories(skills, read = readSkill) {
+  const names = new Set;
+  const directories = [];
+  for (const skill of skills) {
+    if (path3.basename(skill.path) !== "SKILL.md")
+      continue;
+    const directory = path3.dirname(skill.path);
+    if (directories.includes(directory))
+      continue;
+    const content = read(skill.path);
+    const header = content === undefined ? undefined : FRONTMATTER.exec(content)?.[1];
+    if (!header)
+      continue;
+    const name = /^name:\s*["']?([^"'\r\n]+?)["']?\s*$/m.exec(header)?.[1];
+    if (!name || !/^description:\s*\S/m.test(header) || names.has(name))
+      continue;
+    names.add(name);
+    directories.push(directory);
+  }
+  return directories;
+}
+function readSkill(file) {
+  try {
+    return readFileSync2(file, "utf8");
+  } catch {
+    return;
+  }
+}
+function mcpServers(configs, statuses) {
+  const servers = [];
+  const skipped = [];
+  for (const [name, config] of configs) {
+    const status = statuses.get(name);
+    if (config.disabled || status === undefined || status === "disabled")
+      continue;
+    if (status === "failed" || status === "needs_auth") {
+      skipped.push(`${name} (${status})`);
+      continue;
+    }
+    if (config.type === "local") {
+      const [command, ...args] = config.command;
+      if (!command) {
+        skipped.push(`${name} (no command)`);
+        continue;
+      }
+      servers.push({
+        name,
+        transport: "stdio",
+        command,
+        ...args.length ? { args } : {},
+        ...config.environment && Object.keys(config.environment).length ? { env: { ...config.environment } } : {}
+      });
+    } else {
+      servers.push({
+        name,
+        transport: "http",
+        url: config.url,
+        ...config.headers && Object.keys(config.headers).length ? { headers: { ...config.headers } } : {}
+      });
+    }
+  }
+  return { servers, skipped };
 }
 
 // src/mapping.ts
@@ -670,13 +776,13 @@ function proxiedCall(call, offered) {
   const string = (value) => typeof value === "string" ? value : undefined;
   switch (name) {
     case "edit": {
-      const path3 = text(args.file_path);
+      const path4 = text(args.file_path);
       const oldString = string(args.old_string);
       const newString = string(args.new_string);
-      if (!path3 || oldString === undefined || newString === undefined)
+      if (!path4 || oldString === undefined || newString === undefined)
         return;
       const replaceAll = typeof args.replace_all === "boolean" ? args.replace_all : undefined;
-      return { name, input: defined({ path: path3, oldString, newString, replaceAll }) };
+      return { name, input: defined({ path: path4, oldString, newString, replaceAll }) };
     }
     case "patch": {
       const patchText = text(args.patch) ?? text(args.diff);
@@ -1103,9 +1209,18 @@ class AmplifierLanguageModel {
     return { stream: turn.step(options.abortSignal), request: { body: turn.body } };
   }
   async start(options, sessionID) {
-    const face = this.context.face();
+    const face = await this.context.face();
     if (!face)
       throw new Error("The Amplifier face is not running. Run: amplifier-opencode doctor");
+    const release = face.hold();
+    try {
+      return await this.run(face, release, options, sessionID);
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+  async run(face, release, options, sessionID) {
     const effort = options.providerOptions?.[PROVIDER]?.reasoningEffort;
     const body = {
       model: this.modelId,
@@ -1197,6 +1312,7 @@ class AmplifierLanguageModel {
       }
       turn.end();
       reader.releaseLock();
+      release();
     })();
     return turn;
   }
@@ -1450,16 +1566,15 @@ var plugin = {
     const { options, problems } = readOptions();
     for (const problem of problems)
       log(problem);
-    const resolved = await environment(ctx, options);
-    logSources(directory, resolved.sources);
+    const mcp = { current: [] };
+    await ctx.mcp.transform((servers) => {
+      mcp.current = servers.list().map(([name, config]) => [name, structuredClone(config)]);
+    });
+    const resolved = await resolve2(ctx, options, mcp);
+    logSources(directory, resolved);
     const [installed, face] = await Promise.all([
       commandVersion(options.command, resolved.environment),
-      startFace({
-        command: options.command,
-        directory,
-        environment: resolved.environment,
-        approvals: faceApprovals(options.approvals)
-      }).catch((error) => error)
+      launch(faceSettings(options, directory, resolved)).catch((error) => error)
     ]);
     if (face instanceof Error)
       log(face.message);
@@ -1467,7 +1582,7 @@ var plugin = {
     if (stale) {
       log(`plugin ${"0.23.1"} runs with amplifier-opencode ${installed ?? "(unknown)"}. ` + "Run: amplifier-opencode install");
     }
-    const live = { face: undefined, entries: [], fingerprint: resolved.fingerprint };
+    const live = { face: undefined, entries: [], fingerprint: resolved.fingerprint, ready: async () => {} };
     if (!(face instanceof Error))
       show(live, face, options);
     try {
@@ -1477,17 +1592,60 @@ var plugin = {
       throw error;
     }
     const watching = new AbortController;
-    watchEvents(ctx, live, options, directory, watching.signal);
+    watchEvents(ctx, live, options, directory, mcp, watching.signal);
     return () => {
       watching.abort();
       live.face?.stop();
     };
   }
 };
-async function environment(ctx, options) {
-  const resolved = faceEnvironment(process.env, await connections(ctx), options);
-  const fingerprint = createHash3("sha256").update(JSON.stringify(Object.entries(resolved.environment).sort(([a], [b]) => a.localeCompare(b)))).digest("hex");
-  return { ...resolved, fingerprint };
+async function resolve2(ctx, options, mcp) {
+  const { environment, sources } = faceEnvironment(process.env, await connections(ctx), options);
+  const [skills, servers] = await Promise.all([resolvedSkills(ctx), mcpStatuses(ctx)]);
+  const { servers: mcp_servers, skipped } = mcpServers(mcp.current, servers);
+  const inputs = { skills, mcp_servers };
+  const hash = (value) => createHash3("sha256").update(JSON.stringify(value)).digest("hex");
+  const fingerprint = {
+    environment: hash(Object.entries(environment).sort(([a], [b]) => a.localeCompare(b))),
+    inputs: hash(inputs)
+  };
+  return { environment, sources, inputs, skipped, fingerprint };
+}
+async function resolvedSkills(ctx) {
+  try {
+    return skillDirectories((await ctx.skill.list()).data);
+  } catch (error) {
+    log(`could not read the opencode skills: ${error.message}`);
+    return [];
+  }
+}
+async function mcpStatuses(ctx) {
+  try {
+    return new Map((await ctx.mcp.list()).data.map((server) => [server.name, server.status.status]));
+  } catch (error) {
+    log(`could not read the opencode MCP servers: ${error.message}`);
+    return new Map;
+  }
+}
+function faceSettings(options, directory, resolved) {
+  return {
+    command: options.command,
+    directory,
+    environment: resolved.environment,
+    approvals: faceApprovals(options.approvals),
+    inputs: resolved.inputs
+  };
+}
+async function launch(settings) {
+  try {
+    return await startFace(settings);
+  } catch (error) {
+    const { skills, mcp_servers } = settings.inputs;
+    if (!skills.length && !mcp_servers.length)
+      throw error;
+    log(`${error.message} Starting it without opencode's skills and MCP servers.`);
+    return startFace({ ...settings, inputs: NO_INPUTS });
+  }
 }
 async function connections(ctx) {
   const found = [];
@@ -1508,9 +1666,14 @@ async function connections(ctx) {
   }
   return found;
 }
-function logSources(directory, sources) {
-  const names = Object.entries(sources).map(([name, source]) => `${name} from ${source}`);
+function logSources(directory, resolved) {
+  const names = Object.entries(resolved.sources).map(([name, source]) => `${name} from ${source}`);
   log(`face environment for ${directory}: ${names.join(", ") || "no provider credentials"}`);
+  const { skills, mcp_servers } = resolved.inputs;
+  const servers = mcp_servers.map((server) => server.name).join(", ") || "none";
+  log(`face inputs for ${directory}: ${skills.length} skill directories, MCP servers: ${servers}`);
+  if (resolved.skipped.length)
+    log(`MCP servers left out for ${directory}: ${resolved.skipped.join(", ")}`);
 }
 function show(live, face, options) {
   live.face = face;
@@ -1522,47 +1685,98 @@ function show(live, face, options) {
     log(`defaultModel ${defaultModel} is not a model the face lists; using the Amplifier default`);
   }
 }
-function watchEvents(ctx, live, options, directory, signal) {
+function watchEvents(ctx, live, options, directory, mcp, signal) {
   let queue = Promise.resolve();
-  const refresh = () => {
-    queue = queue.then(async () => {
-      if (signal.aborted)
-        return;
-      const resolved = await environment(ctx, options);
-      if (signal.aborted || resolved.fingerprint === live.fingerprint)
-        return;
-      log(`opencode connections changed; restarting the face for ${directory}`);
-      logSources(directory, resolved.sources);
-      const face = await startFace({
-        command: options.command,
-        directory,
-        environment: resolved.environment,
-        approvals: faceApprovals(options.approvals)
-      });
-      if (signal.aborted) {
-        face.stop();
-        return;
-      }
-      const previous = live.face;
-      show(live, face, options);
-      live.fingerprint = resolved.fingerprint;
-      await ctx.provider.reload();
-      await ctx.model.reload();
-      await ctx.agent.reload();
-      previous?.stop();
-    }).catch((error) => log(`${live.face ? "kept the running face" : "no face runs"} for ${directory}: ${error.message}`));
+  let waiting;
+  const enqueue = (work) => {
+    queue = queue.then(work).catch((error) => log(`could not update the face for ${directory}: ${error.message}`));
+    return queue;
   };
+  const follow = (face) => void face.crashed.then((reason) => {
+    if (live.face === face && !signal.aborted)
+      restart(face, reason);
+  });
+  const swap = async (face, fingerprint) => {
+    if (signal.aborted) {
+      face.stop();
+      return;
+    }
+    const previous = live.face;
+    show(live, face, options);
+    live.fingerprint = fingerprint;
+    follow(face);
+    await reload();
+    previous?.retire();
+  };
+  const reload = async () => {
+    await ctx.provider.reload();
+    await ctx.model.reload();
+    await ctx.agent.reload();
+  };
+  const update = async () => {
+    if (signal.aborted)
+      return;
+    const resolved = await resolve2(ctx, options, mcp);
+    if (signal.aborted)
+      return;
+    const changed = [
+      ...resolved.fingerprint.environment === live.fingerprint.environment ? [] : ["connections"],
+      ...resolved.fingerprint.inputs === live.fingerprint.inputs ? [] : ["skills or MCP servers"]
+    ];
+    if (!changed.length)
+      return;
+    log(`opencode ${changed.join(" and ")} changed; restarting the face for ${directory}`);
+    logSources(directory, resolved);
+    try {
+      await swap(await launch(faceSettings(options, directory, resolved)), resolved.fingerprint);
+    } catch (error) {
+      log(`${live.face ? "kept the running face" : "no face runs"} for ${directory}: ${error.message}`);
+    }
+  };
+  const refresh = () => {
+    waiting ??= enqueue(() => {
+      waiting = undefined;
+      return update();
+    });
+    return waiting;
+  };
+  const restart = (crashed, reason) => enqueue(async () => {
+    if (live.face !== crashed || signal.aborted)
+      return;
+    log(`the face for ${directory} ${reason}; restarting it`);
+    const resolved = await resolve2(ctx, options, mcp);
+    logSources(directory, resolved);
+    try {
+      await swap(await launch(faceSettings(options, directory, resolved)), resolved.fingerprint);
+    } catch (error) {
+      log(error.message);
+      live.face = undefined;
+      live.entries = [];
+      live.fingerprint = resolved.fingerprint;
+      await reload();
+    }
+  });
+  live.ready = refresh;
+  if (live.face)
+    follow(live.face);
   (async () => {
     try {
       for await (const event of ctx.event.subscribe({ signal })) {
-        if (event.type === "credential.updated" || event.type === "credential.switched")
-          refresh();
-        else if (event.type === "session.execution.interrupted")
-          interrupt(event.data.sessionID);
+        switch (event.type) {
+          case "credential.updated":
+          case "credential.switched":
+          case "skill.updated":
+          case "mcp.status.changed":
+          case "config.updated":
+            refresh();
+            break;
+          case "session.execution.interrupted":
+            interrupt(event.data.sessionID);
+        }
       }
     } catch (error) {
       if (!signal.aborted)
-        log(`stopped following opencode connections for ${directory}: ${error.message}`);
+        log(`stopped following opencode changes for ${directory}: ${error.message}`);
     }
   })();
   refresh();
@@ -1649,7 +1863,7 @@ async function register2(ctx, live, options, stale) {
   });
   await ctx.aisdk.hook("language", (event) => {
     event.language = new AmplifierLanguageModel(String(event.model.modelID ?? event.model.id), {
-      face: () => live.face,
+      face: () => live.ready().then(() => live.face),
       asks,
       assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID }),
       observe: (sessionID, envelope) => {

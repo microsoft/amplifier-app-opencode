@@ -360,6 +360,9 @@ def _parser() -> argparse.ArgumentParser:
     face_parser.add_argument("--port", type=int, required=True)
     face_parser.add_argument("--token-env", required=True, help="environment variable holding the bearer token")
     face_parser.add_argument(
+        "--inputs-env", help="environment variable holding the agent's skill directories and MCP servers as JSON"
+    )
+    face_parser.add_argument(
         "--approvals",
         choices=("allow", "deny"),
         default=os.environ.get("AMPLIFIER_AGENT_APPROVALS") or "allow",
@@ -379,5 +382,5 @@ def main(argv: list[str] | None = None) -> None:
     else:
         from amplifier_app_opencode import face
 
-        code = face.run(args.port, args.token_env, args.approvals)
+        code = face.run(args.port, args.token_env, args.approvals, args.inputs_env)
     raise SystemExit(code)
