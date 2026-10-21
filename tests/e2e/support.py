@@ -16,6 +16,11 @@ import pytest
 REPOSITORY = Path(__file__).resolve().parents[2]
 PROFILE = REPOSITORY / ".agents" / "digital-twin-universe" / "opencode-amplifier"
 HOME = "/home/user"
+CONFIG = f"{HOME}/.config/opencode"
+STATE = f"{HOME}/.local/state/amplifier-opencode"
+DEFAULT_MODEL = "openai/gpt-6.1-sol"
+# The opencode model key for DEFAULT_MODEL with its medium reasoning variant; every turn runs on it.
+MODEL = "amplifier/openai-gpt-6.1-sol#medium"
 LAUNCH_TIMEOUT = 900
 TURN_TIMEOUT = 300
 
@@ -73,7 +78,10 @@ class Twin:
         return directory
 
     def opencode_run(self, directory: str, prompt: str, *options: str) -> Reply:
-        """One `opencode run` turn. Each word is its own argument, which opencode joins without quoting."""
+        """One `opencode run` turn on MODEL unless `options` name a model. Each word is its own argument, which
+        opencode joins without quoting."""
+        if "--model" not in options:
+            options = ("--model", MODEL, *options)
         words = " ".join(shlex.quote(word) for word in prompt.split())
         flags = " ".join(shlex.quote(option) for option in options)
         result = self.run(f"opencode run --format json {flags} {words}", workdir=directory)

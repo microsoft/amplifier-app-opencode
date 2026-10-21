@@ -9,7 +9,7 @@ Requirements: opencode 2.1 or newer, Linux or macOS (Windows through WSL), and a
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh | bash
-export ANTHROPIC_API_KEY=...
+opencode auth login anthropic          # once; or /connect inside opencode
 opencode
 ```
 
@@ -28,6 +28,10 @@ In opencode:
   `amplifier/<provider>-<model>`, for example `amplifier/anthropic-claude-sonnet-5-5`.
 - Each model has one variant per reasoning effort it supports, for example `amplifier/anthropic-claude-opus-5-5#high`.
 - A session keeps its Amplifier conversation, including tool work, across turns and restarts.
+
+Providers you connect in opencode reach Amplifier with no other step: Anthropic, OpenAI, and Google API keys, a GitHub
+Copilot sign-in, and an Azure key with its resource name. Connecting a provider while opencode runs restarts Amplifier,
+and its models appear in `/models`.
 
 Check the installation with `amplifier-opencode doctor`.
 
@@ -62,11 +66,11 @@ The details of what changed are in [migrating from 0.4.x](docs/migrating-from-0.
 ```
 
 ```
-defaultModel      a model from /v1/models as <provider>/<model>, for example "anthropic/claude-sonnet-5-5";
-                  null uses Amplifier's configured default
+defaultModel      a model from /v1/models as <provider>/<model>, for example "openai/gpt-6.1-sol". It also sets
+                  Amplifier's default provider and model; null uses Amplifier's configured default (Anthropic)
 setDefaultAgent   make amplifier the default agent
 approvals         "allow" runs Amplifier's tools; "deny" refuses every tool call
-environment       variables added to Amplifier's environment, such as provider keys
+environment       variables added to Amplifier's environment; they override opencode connections
 command           the amplifier-opencode executable the plugin starts
 ```
 
@@ -89,8 +93,9 @@ Amplifier, in the session's directory.
 - Run `amplifier-opencode doctor`. It checks the opencode version, the installed plugin, and which providers have
   credentials.
 - Logs are in `~/.local/state/amplifier-opencode/`: `plugin.log` and one face log per directory.
-- opencode 2.x keeps a background service, and Amplifier gets that service's environment. After you change keys, run
-  `opencode service restart`.
+- Credentials resolve in this order, later wins: the environment, opencode connections, then `amplifier.json`.
+  Connections made in opencode apply at once. Keys exported in your shell reach Amplifier only after
+  `opencode service restart`, because opencode 2.x keeps a background service.
 - The provider shows as `Amplifier (run: amplifier-opencode install)` when the installed plugin and the package
   versions differ. Run `amplifier-opencode install`.
 
@@ -104,7 +109,7 @@ make test           # unit tests
 make e2e            # end-to-end suites in a Digital Twin Universe; SUITE=<name> runs one
 ```
 
-The end-to-end suites need Docker and `ANTHROPIC_API_KEY`. They publish this checkout and `../amplifier-agent` through
+The end-to-end suites need Docker and `OPENAI_API_KEY`. They publish this checkout and `../amplifier-agent` through
 a local Gitea and install as a user would; see `tests/e2e/conftest.py`.
 
 ## Contributing

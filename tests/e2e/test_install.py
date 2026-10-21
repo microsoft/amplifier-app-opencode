@@ -4,9 +4,8 @@ import shlex
 
 from digital_twin_universe import lib
 from digital_twin_universe.schemas import ExecResult
-from support import HOME, REPOSITORY, Twin
+from support import CONFIG, DEFAULT_MODEL, HOME, REPOSITORY, STATE, Twin
 
-CONFIG = f"{HOME}/.config/opencode"
 PLUGIN = f"{CONFIG}/plugins/amplifier.js"
 BUNDLE = REPOSITORY / "src" / "amplifier_app_opencode" / "plugin_bundle" / "amplifier.js"
 
@@ -46,6 +45,7 @@ def test_install_from_the_readme_installs_the_plugin_that_was_built(
 
     options = json.loads(opencode.read(f"{CONFIG}/amplifier.json"))
     assert options["setDefaultAgent"] is True
+    assert options["environment"] == {}
     assert "command" not in options
     assert opencode.check("uv tool list").startswith("amplifier-app-opencode v")
 
@@ -56,8 +56,24 @@ def test_doctor_finds_no_problems(opencode: Twin) -> None:
     assert result.exit_code == 0, f"{result.stdout}\n{result.stderr}"
     assert "opencode: 2.1.2" in result.stdout
     assert f"plugin: {PLUGIN}" in result.stdout
-    assert "anthropic" in next(line for line in result.stdout.splitlines() if line.startswith("providers with"))
+    assert "providers connected in opencode: openai\n" in result.stdout
+    assert "providers with credentials in the environment: none\n" in result.stdout
     assert result.stdout.rstrip().endswith("No problems found.")
+
+
+def test_openai_connected_in_opencode_reaches_the_running_face(opencode: Twin) -> None:
+    log = opencode.read(f"{STATE}/plugin.log")
+
+    assert opencode.run('test -z "${OPENAI_API_KEY:-}"').exit_code == 0
+    assert f"opencode connections changed; restarting the face for {HOME}" in log
+    assert f"face environment for {HOME}: OPENAI_API_KEY from opencode openai" in log
+
+
+def test_the_amplifier_agent_runs_the_default_model(opencode: Twin) -> None:
+    agents = json.loads(opencode.check("opencode debug agents", workdir=HOME))
+    amplifier = next(agent for agent in agents if agent["id"] == "amplifier")
+
+    assert amplifier["model"] == {"providerID": "amplifier", "id": DEFAULT_MODEL.replace("/", "-")}
 
 
 def test_install_removes_what_0_4_wrote_and_keeps_the_users_files(opencode: Twin) -> None:

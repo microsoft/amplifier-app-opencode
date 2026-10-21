@@ -28,7 +28,7 @@ tests/e2e/                              Digital Twin Universe suites; its own uv
 ```bash
 make check    # ruff, ty, tsc, and the plugin bundle is up to date
 make test     # pytest and bun test
-make e2e      # needs Docker and ANTHROPIC_API_KEY; SUITE=<name> runs one suite
+make e2e      # needs Docker and OPENAI_API_KEY; SUITE=<name> runs one suite
 ```
 
 - `make check` and `make test` pass before work is done. Changes to install, the plugin, or the face command also

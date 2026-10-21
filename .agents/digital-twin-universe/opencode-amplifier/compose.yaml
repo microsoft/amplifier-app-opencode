@@ -1,14 +1,17 @@
 # opencode 2.1.2 on a user's Linux machine, with this checkout and the amplifier-agent checkout served at their GitHub
 # URLs, so the install a user runs fetches the local code.
 #
-#   export ANTHROPIC_API_KEY=...
+#   export OPENAI_API_KEY=...
 #   digital-twin-universe launch --profile opencode-amplifier
 #   digital-twin-universe exec --id <id> --command \
 #     'curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/<branch>/install.sh \
 #      | AMPLIFIER_OPENCODE_REF=<branch> bash'
 #
 # AMPLIFIER_AGENT_DIR names the amplifier-agent checkout; its branch http-face-opencode is what this repository's
-# dependency resolves to.
+# dependency resolves to. OPENAI_API_KEY reaches the twin only as the file /run/secrets/openai_api_key, so opencode
+# finds no provider in its environment until one is connected:
+#
+#   opencode auth login openai --method key
 name: opencode-amplifier
 
 x-dtu:
@@ -27,12 +30,14 @@ x-dtu:
 services:
   twin:
     build: .
-    environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?export ANTHROPIC_API_KEY so Amplifier can call Anthropic}
-      # Passed only when set on the host.
-      OPENAI_API_KEY:
+    secrets:
+      - openai_api_key
     command: sleep infinity
     healthcheck:
       test: [CMD, opencode, --version]
       interval: 2s
       start_period: 30s
+
+secrets:
+  openai_api_key:
+    environment: OPENAI_API_KEY

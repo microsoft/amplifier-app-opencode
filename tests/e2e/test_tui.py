@@ -14,7 +14,16 @@ def test_the_tui_shows_amplifiers_reply(opencode: Twin) -> None:
         return [line.strip() for line in opencode.run(f"tmux capture-pane -p -t {SESSION}").stdout.splitlines()]
 
     try:
-        assert wait_for(lambda: any("Amplifier default" in line for line in screen()), timeout=120), screen()
+        assert wait_for(lambda: any("Amplifier · GPT 6.1 Sol" in line for line in screen()), timeout=120), screen()
+
+        def medium() -> bool:
+            if any(line.endswith("· medium") for line in screen()):
+                return True
+            # ctrl+t cycles the model's reasoning variants.
+            opencode.check(f"tmux send-keys -t {SESSION} C-t")
+            return False
+
+        assert wait_for(medium, timeout=30, interval=1), screen()
         opencode.check(f"tmux send-keys -t {SESSION} -l 'Reply with exactly the word papaya'")
         opencode.check(f"tmux send-keys -t {SESSION} Enter")
         assert wait_for(lambda: "papaya" in screen(), timeout=180), "\n".join(screen())

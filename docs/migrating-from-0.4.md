@@ -10,8 +10,9 @@ asking. It removes:
 
 Other changes:
 
-- Credentials: `~/.amplifier-agent/credentials.json` (from `amplifier-agent auth set`) is no longer read. Set provider
-  keys in the environment that starts opencode, or in `environment` in `amplifier.json`.
+- Credentials: `~/.amplifier-agent/credentials.json` (from `amplifier-agent auth set`) is no longer read. Connect the
+  provider in opencode with `/connect` or `opencode auth login <provider>`, or set its key in the environment that
+  starts opencode or in `environment` in `amplifier.json`.
 - Commands: `launch`, `prepare`, `setup`, and `update` are gone. Run `opencode`, and update with
   `uv tool upgrade amplifier-app-opencode` followed by `amplifier-opencode install`.
 - Flags and variables: `--base-url`, `--api-key`, `--workspace`, `--host-config`, `--project-dir`, `--no-start`,

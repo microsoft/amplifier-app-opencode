@@ -1,6 +1,80 @@
 // @bun
 // amplifier-opencode-plugin 0.23.1
 
+// src/index.ts
+import { createHash as createHash3 } from "crypto";
+
+// src/credentials.ts
+var INTEGRATIONS = ["anthropic", "openai", "google", "github-copilot", "azure"];
+var CREDENTIAL_VARIABLES = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_ENDPOINT",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "COPILOT_AGENT_TOKEN",
+  "COPILOT_GITHUB_TOKEN",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "OLLAMA_API_KEY",
+  "VLLM_API_KEY",
+  "CHAT_COMPLETIONS_API_KEY"
+];
+var KEY_VARIABLES = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GEMINI_API_KEY"
+};
+var AZURE_RESOURCE = /^[a-zA-Z0-9][a-zA-Z0-9-]*$/;
+function connectionVariables(connection) {
+  const { integrationID, credential } = connection;
+  if (credential.type === "key" && credential.key) {
+    const variable = KEY_VARIABLES[integrationID];
+    if (variable)
+      return { [variable]: credential.key };
+    const resource = credential.metadata?.resourceName;
+    if (integrationID === "azure" && typeof resource === "string" && AZURE_RESOURCE.test(resource)) {
+      return { AZURE_OPENAI_API_KEY: credential.key, AZURE_OPENAI_ENDPOINT: `https://${resource}.openai.azure.com` };
+    }
+  }
+  if (credential.type === "oauth" && integrationID === "github-copilot" && credential.access) {
+    return { COPILOT_GITHUB_TOKEN: credential.access };
+  }
+  return {};
+}
+function defaultModelVariables(defaultModel) {
+  const separator = defaultModel?.indexOf("/") ?? -1;
+  if (!defaultModel || separator < 1 || separator === defaultModel.length - 1)
+    return {};
+  return {
+    AMPLIFIER_AGENT_PROVIDER: defaultModel.slice(0, separator),
+    AMPLIFIER_AGENT_MODEL: defaultModel.slice(separator + 1)
+  };
+}
+function faceEnvironment(processEnvironment, connections, options) {
+  const environment = {};
+  const sources = {};
+  for (const [name, value] of Object.entries(processEnvironment)) {
+    if (value === undefined)
+      continue;
+    environment[name] = value;
+    if (CREDENTIAL_VARIABLES.includes(name) && value)
+      sources[name] = "environment";
+  }
+  for (const connection of connections) {
+    for (const [name, value] of Object.entries(connectionVariables(connection))) {
+      environment[name] = value;
+      sources[name] = `opencode ${connection.integrationID}`;
+    }
+  }
+  for (const [name, value] of Object.entries({ ...defaultModelVariables(options.defaultModel), ...options.environment })) {
+    environment[name] = value;
+    sources[name] = "amplifier.json";
+  }
+  return { environment, sources };
+}
+
 // src/face.ts
 import { execFile, spawn } from "child_process";
 import { createHash, randomBytes } from "crypto";
@@ -210,38 +284,133 @@ var plugin = {
     const { options, problems } = readOptions();
     for (const problem of problems)
       log(problem);
-    const environment = { ...process.env, ...options.environment };
+    const resolved = await environment(ctx, options);
+    logSources(directory, resolved.sources);
     const [installed, face] = await Promise.all([
-      commandVersion(options.command, environment),
-      startFace({ command: options.command, directory, environment, approvals: options.approvals }).catch((error) => error)
+      commandVersion(options.command, resolved.environment),
+      startFace({
+        command: options.command,
+        directory,
+        environment: resolved.environment,
+        approvals: options.approvals
+      }).catch((error) => error)
     ]);
-    if (face instanceof Error) {
+    if (face instanceof Error)
       log(face.message);
-      throw face;
-    }
     const stale = installed !== "0.23.1";
     if (stale) {
       log(`plugin ${"0.23.1"} runs with amplifier-opencode ${installed ?? "(unknown)"}. ` + "Run: amplifier-opencode install");
     }
+    const live = { face: undefined, entries: [], fingerprint: resolved.fingerprint };
+    if (!(face instanceof Error))
+      show(live, face, options);
     try {
-      await register(ctx, face, options.defaultModel, options.setDefaultAgent, stale);
+      await register(ctx, live, options.defaultModel, options.setDefaultAgent, stale);
     } catch (error) {
-      face.stop();
+      live.face?.stop();
       throw error;
     }
-    return () => face.stop();
+    const watching = new AbortController;
+    watchConnections(ctx, live, options, directory, watching.signal);
+    return () => {
+      watching.abort();
+      live.face?.stop();
+    };
   }
 };
-async function register(ctx, face, defaultModel, setDefaultAgent, stale) {
-  const entries = modelEntries(face.models);
+async function environment(ctx, options) {
+  const resolved = faceEnvironment(process.env, await connections(ctx), options);
+  const fingerprint = createHash3("sha256").update(JSON.stringify(Object.entries(resolved.environment).sort(([a], [b]) => a.localeCompare(b)))).digest("hex");
+  return { ...resolved, fingerprint };
+}
+async function connections(ctx) {
+  const found = [];
+  for (const integrationID of INTEGRATIONS) {
+    try {
+      const connection = await ctx.integration.connection.active(integrationID);
+      if (!connection)
+        continue;
+      const usable = integrationID === "github-copilot" ? "oauth" : "key";
+      if (connection.type === "credential" && connection.method !== usable)
+        continue;
+      const credential = await ctx.integration.connection.resolve(connection);
+      if (credential)
+        found.push({ integrationID, credential });
+    } catch (error) {
+      log(`could not read the opencode ${integrationID} connection: ${error.message}`);
+    }
+  }
+  return found;
+}
+function logSources(directory, sources) {
+  const names = Object.entries(sources).map(([name, source]) => `${name} from ${source}`);
+  log(`face environment for ${directory}: ${names.join(", ") || "no provider credentials"}`);
+}
+function show(live, face, options) {
+  live.face = face;
+  live.entries = modelEntries(face.models);
+  const { defaultModel } = options;
+  if (!defaultModel || defaultModel === DEFAULT_MODEL_KEY)
+    return;
+  if (defaultModelKey(live.entries, defaultModel) === DEFAULT_MODEL_KEY) {
+    log(`defaultModel ${defaultModel} is not a model the face lists; using the Amplifier default`);
+  }
+}
+function watchConnections(ctx, live, options, directory, signal) {
+  let queue = Promise.resolve();
+  const refresh = () => {
+    queue = queue.then(async () => {
+      if (signal.aborted)
+        return;
+      const resolved = await environment(ctx, options);
+      if (signal.aborted || resolved.fingerprint === live.fingerprint)
+        return;
+      log(`opencode connections changed; restarting the face for ${directory}`);
+      logSources(directory, resolved.sources);
+      const face = await startFace({
+        command: options.command,
+        directory,
+        environment: resolved.environment,
+        approvals: options.approvals
+      });
+      if (signal.aborted) {
+        face.stop();
+        return;
+      }
+      const previous = live.face;
+      show(live, face, options);
+      live.fingerprint = resolved.fingerprint;
+      await ctx.provider.reload();
+      await ctx.model.reload();
+      await ctx.agent.reload();
+      previous?.stop();
+    }).catch((error) => log(`${live.face ? "kept the running face" : "no face runs"} for ${directory}: ${error.message}`));
+  };
+  (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal })) {
+        if (event.type === "credential.updated" || event.type === "credential.switched")
+          refresh();
+      }
+    } catch (error) {
+      if (!signal.aborted)
+        log(`stopped following opencode connections for ${directory}: ${error.message}`);
+    }
+  })();
+  refresh();
+}
+async function register(ctx, live, defaultModel, setDefaultAgent, stale) {
   await ctx.provider.transform((providers) => {
+    const face = live.face;
+    if (!face)
+      return;
     providers.update(PROVIDER, (provider) => {
       provider.name = stale ? "Amplifier (run: amplifier-opencode install)" : "Amplifier";
       provider.activation = "enabled";
       provider.package = "@opencode/ai/providers/openai-compatible";
       provider.settings = { baseURL: face.baseURL, apiKey: face.token };
     });
-    for (const entry of entries) {
+    for (const entry of live.entries) {
       providers.models.update(PROVIDER, entry.key, (model) => {
         model.modelID = entry.modelID;
         model.name = entry.name;
@@ -254,19 +423,20 @@ async function register(ctx, face, defaultModel, setDefaultAgent, stale) {
     }
   });
   if (setDefaultAgent) {
-    const key = defaultModelKey(entries, defaultModel);
-    if (defaultModel && key === DEFAULT_MODEL_KEY && defaultModel !== DEFAULT_MODEL_KEY) {
-      log(`defaultModel ${defaultModel} is not a model the face lists; using the Amplifier default`);
-    }
-    await ctx.model.transform((models) => models.default.set(PROVIDER, key));
+    await ctx.model.transform((models) => {
+      if (live.face)
+        models.default.set(PROVIDER, defaultModelKey(live.entries, defaultModel));
+    });
   }
   await ctx.agent.transform((agents) => {
+    if (!live.face)
+      return;
     agents.update(AGENT, (agent) => {
       agent.name = AGENT;
       agent.description = "Amplifier Agent. Runs its own tools in this directory.";
       agent.mode = "primary";
       agent.hidden = false;
-      agent.model = { providerID: PROVIDER, id: defaultModelKey(entries, defaultModel) };
+      agent.model = { providerID: PROVIDER, id: defaultModelKey(live.entries, defaultModel) };
       agent.permissions = [{ action: "*", resource: "*", effect: "deny" }];
     });
     if (setDefaultAgent)

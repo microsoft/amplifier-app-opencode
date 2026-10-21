@@ -42,7 +42,7 @@ test: plugin/node_modules ## Run the unit tests
 	uv run pytest
 	cd plugin && bun test
 
-# End-to-end suites in a Digital Twin Universe (Docker, ANTHROPIC_API_KEY): this checkout's branch and
+# End-to-end suites in a Digital Twin Universe (Docker, OPENAI_API_KEY): this checkout's branch and
 # AMPLIFIER_AGENT_DIR are served at their GitHub URLs and installed as the README says. SUITE=<name> runs
 # tests/e2e/test_<name>.py only; E2E_KEEP=1 leaves the universe running.
 e2e: ## Run the end-to-end suites (SUITE=install|chat|coding|continuity|tui for one)

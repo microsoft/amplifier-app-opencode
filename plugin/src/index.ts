@@ -1,7 +1,17 @@
+import { createHash } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
+import { type Connection, faceEnvironment, INTEGRATIONS } from "./credentials.ts"
 import { commandVersion, type Face, log, startFace } from "./face.ts"
-import { DEFAULT_MODEL_KEY, defaultModelKey, modelEntries, sessionHeader, titleFrom, withoutReasoning } from "./mapping.ts"
-import { readOptions } from "./options.ts"
+import {
+  DEFAULT_MODEL_KEY,
+  defaultModelKey,
+  type ModelEntry,
+  modelEntries,
+  sessionHeader,
+  titleFrom,
+  withoutReasoning,
+} from "./mapping.ts"
+import { type Options, readOptions } from "./options.ts"
 
 declare const AMPLIFIER_OPENCODE_VERSION: string
 
@@ -9,9 +19,17 @@ const PROVIDER = "amplifier"
 const AGENT = "amplifier"
 const SCOPE = { providerID: PROVIDER }
 
+/** The face the registrations show, if one runs, and the environment it was started with. */
+interface Live {
+  face: Face | undefined
+  entries: ModelEntry[]
+  fingerprint: string
+}
+
 /**
  * Amplifier Agent as an opencode provider and agent. opencode creates one plugin instance per location
  * (working directory), and a session only runs in its own location, so each instance runs one face in its directory.
+ * The face runs with the provider credentials of opencode's connections, and restarts when they change.
  */
 const plugin: Plugin.Plugin = {
   id: "amplifier",
@@ -19,18 +37,20 @@ const plugin: Plugin.Plugin = {
     const directory = ctx.location.directory
     const { options, problems } = readOptions()
     for (const problem of problems) log(problem)
-    const environment = { ...process.env, ...options.environment }
+    const resolved = await environment(ctx, options)
+    logSources(directory, resolved.sources)
 
     const [installed, face] = await Promise.all([
-      commandVersion(options.command, environment),
-      startFace({ command: options.command, directory, environment, approvals: options.approvals }).catch(
-        (error: Error) => error,
-      ),
+      commandVersion(options.command, resolved.environment),
+      startFace({
+        command: options.command,
+        directory,
+        environment: resolved.environment,
+        approvals: options.approvals,
+      }).catch((error: Error) => error),
     ])
-    if (face instanceof Error) {
-      log(face.message)
-      throw face
-    }
+    // Without a face the provider and agent stay hidden; connecting a provider in opencode starts it.
+    if (face instanceof Error) log(face.message)
     const stale = installed !== AMPLIFIER_OPENCODE_VERSION
     if (stale) {
       log(
@@ -39,33 +59,136 @@ const plugin: Plugin.Plugin = {
       )
     }
 
+    const live: Live = { face: undefined, entries: [], fingerprint: resolved.fingerprint }
+    if (!(face instanceof Error)) show(live, face, options)
     try {
-      await register(ctx, face, options.defaultModel, options.setDefaultAgent, stale)
+      await register(ctx, live, options.defaultModel, options.setDefaultAgent, stale)
     } catch (error) {
-      face.stop()
+      live.face?.stop()
       throw error
     }
-    return () => face.stop()
+    const watching = new AbortController()
+    watchConnections(ctx, live, options, directory, watching.signal)
+    return () => {
+      watching.abort()
+      live.face?.stop()
+    }
   },
+}
+
+/** The face's environment, its sources, and a fingerprint that changes when the environment does. */
+async function environment(ctx: Plugin.Context, options: Options) {
+  const resolved = faceEnvironment(process.env, await connections(ctx), options)
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify(Object.entries(resolved.environment).sort(([a], [b]) => a.localeCompare(b))))
+    .digest("hex")
+  return { ...resolved, fingerprint }
+}
+
+/** The active opencode connection of each integration Amplifier can use, resolved to its credential. */
+async function connections(ctx: Plugin.Context): Promise<Connection[]> {
+  const found: Connection[] = []
+  for (const integrationID of INTEGRATIONS) {
+    try {
+      const connection = await ctx.integration.connection.active(integrationID)
+      if (!connection) continue
+      // Resolving can refresh a sign-in, so only the kind of credential Amplifier uses is resolved.
+      const usable = integrationID === "github-copilot" ? "oauth" : "key"
+      if (connection.type === "credential" && connection.method !== usable) continue
+      const credential = await ctx.integration.connection.resolve(connection)
+      if (credential) found.push({ integrationID, credential })
+    } catch (error) {
+      log(`could not read the opencode ${integrationID} connection: ${(error as Error).message}`)
+    }
+  }
+  return found
+}
+
+function logSources(directory: string, sources: Readonly<Record<string, string>>): void {
+  const names = Object.entries(sources).map(([name, source]) => `${name} from ${source}`)
+  log(`face environment for ${directory}: ${names.join(", ") || "no provider credentials"}`)
+}
+
+function show(live: Live, face: Face, options: Options): void {
+  live.face = face
+  live.entries = modelEntries(face.models)
+  const { defaultModel } = options
+  if (!defaultModel || defaultModel === DEFAULT_MODEL_KEY) return
+  if (defaultModelKey(live.entries, defaultModel) === DEFAULT_MODEL_KEY) {
+    log(`defaultModel ${defaultModel} is not a model the face lists; using the Amplifier default`)
+  }
+}
+
+/** Restart the face when opencode's connections change the environment it runs with, and show its models. */
+function watchConnections(
+  ctx: Plugin.Context,
+  live: Live,
+  options: Options,
+  directory: string,
+  signal: AbortSignal,
+): void {
+  let queue = Promise.resolve()
+  const refresh = () => {
+    queue = queue
+      .then(async () => {
+        if (signal.aborted) return
+        const resolved = await environment(ctx, options)
+        if (signal.aborted || resolved.fingerprint === live.fingerprint) return
+        log(`opencode connections changed; restarting the face for ${directory}`)
+        logSources(directory, resolved.sources)
+        const face = await startFace({
+          command: options.command,
+          directory,
+          environment: resolved.environment,
+          approvals: options.approvals,
+        })
+        if (signal.aborted) {
+          face.stop()
+          return
+        }
+        const previous = live.face
+        show(live, face, options)
+        live.fingerprint = resolved.fingerprint
+        await ctx.provider.reload()
+        await ctx.model.reload()
+        await ctx.agent.reload()
+        previous?.stop()
+      })
+      .catch((error: Error) =>
+        log(`${live.face ? "kept the running face" : "no face runs"} for ${directory}: ${error.message}`),
+      )
+  }
+
+  void (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal })) {
+        if (event.type === "credential.updated" || event.type === "credential.switched") refresh()
+      }
+    } catch (error) {
+      if (!signal.aborted) log(`stopped following opencode connections for ${directory}: ${(error as Error).message}`)
+    }
+  })()
+  // A connection made while the face started has no event left to announce it.
+  refresh()
 }
 
 async function register(
   ctx: Plugin.Context,
-  face: Face,
+  live: Live,
   defaultModel: string | null,
   setDefaultAgent: boolean,
   stale: boolean,
 ): Promise<void> {
-  const entries = modelEntries(face.models)
-
   await ctx.provider.transform((providers) => {
+    const face = live.face
+    if (!face) return
     providers.update(PROVIDER, (provider) => {
       provider.name = stale ? "Amplifier (run: amplifier-opencode install)" : "Amplifier"
       provider.activation = "enabled"
       provider.package = "@opencode/ai/providers/openai-compatible"
       provider.settings = { baseURL: face.baseURL, apiKey: face.token }
     })
-    for (const entry of entries) {
+    for (const entry of live.entries) {
       providers.models.update(PROVIDER, entry.key, (model) => {
         model.modelID = entry.modelID as never
         model.name = entry.name
@@ -81,20 +204,19 @@ async function register(
   })
 
   if (setDefaultAgent) {
-    const key = defaultModelKey(entries, defaultModel)
-    if (defaultModel && key === DEFAULT_MODEL_KEY && defaultModel !== DEFAULT_MODEL_KEY) {
-      log(`defaultModel ${defaultModel} is not a model the face lists; using the Amplifier default`)
-    }
-    await ctx.model.transform((models) => models.default.set(PROVIDER, key))
+    await ctx.model.transform((models) => {
+      if (live.face) models.default.set(PROVIDER, defaultModelKey(live.entries, defaultModel))
+    })
   }
 
   await ctx.agent.transform((agents) => {
+    if (!live.face) return
     agents.update(AGENT, (agent) => {
       agent.name = AGENT as never
       agent.description = "Amplifier Agent. Runs its own tools in this directory."
       agent.mode = "primary"
       agent.hidden = false
-      agent.model = { providerID: PROVIDER, id: defaultModelKey(entries, defaultModel) } as never
+      agent.model = { providerID: PROVIDER, id: defaultModelKey(live.entries, defaultModel) } as never
       // Amplifier runs its tools itself; opencode sends none and runs none.
       agent.permissions = [{ action: "*", resource: "*", effect: "deny" }] as never
     })
