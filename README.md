@@ -67,7 +67,8 @@ The details of what changed are in [migrating from 0.4.x](docs/migrating-from-0.
 
 ```
 defaultModel      a model from /v1/models as <provider>/<model>, for example "openai/gpt-6.1-sol". It also sets
-                  Amplifier's default provider and model; null uses Amplifier's configured default (Anthropic)
+                  Amplifier's default provider and model; null uses the first connected provider: OpenAI,
+                  Anthropic, Google, ChatGPT, then GitHub Copilot
 setDefaultAgent   make amplifier the default agent
 approvals         "allow" runs Amplifier's tools; "deny" refuses every tool call
 environment       variables added to Amplifier's environment; they override opencode connections
