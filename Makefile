@@ -8,7 +8,7 @@ AMPLIFIER_AGENT_DIR ?= ../amplifier-agent
 LOCAL_AGENT := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.$(abspath $(AMPLIFIER_AGENT_DIR)).insteadOf \
 	GIT_CONFIG_VALUE_0=https://github.com/microsoft/amplifier-agent
 
-.PHONY: help plugin-deps plugin check test fmt sync-local lock-local
+.PHONY: help plugin-deps plugin check test e2e fmt sync-local lock-local
 
 help: ## Show targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -41,6 +41,13 @@ check: plugin/node_modules ## Lint, type-check, and confirm the plugin bundle is
 test: plugin/node_modules ## Run the unit tests
 	uv run pytest
 	cd plugin && bun test
+
+# End-to-end suites in a Digital Twin Universe (Docker, ANTHROPIC_API_KEY): this checkout's branch and
+# AMPLIFIER_AGENT_DIR are served at their GitHub URLs and installed as the README says. SUITE=<name> runs
+# tests/e2e/test_<name>.py only; E2E_KEEP=1 leaves the universe running.
+e2e: ## Run the end-to-end suites (SUITE=install|chat|coding|continuity|tui for one)
+	cd tests/e2e && AMPLIFIER_AGENT_DIR=$(abspath $(AMPLIFIER_AGENT_DIR)) \
+		uv run pytest -v --durations=0 $(if $(SUITE),test_$(SUITE).py)
 
 fmt: ## Format and fix lint
 	uv run ruff format src tests

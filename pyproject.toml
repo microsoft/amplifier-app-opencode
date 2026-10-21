@@ -33,7 +33,7 @@ include = ["src", "pyproject.toml", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--import-mode=importlib -p no:amplifier_module"
+addopts = "--import-mode=importlib -p no:amplifier_module --ignore=tests/e2e"
 
 [tool.ruff]
 line-length = 120
@@ -77,4 +77,4 @@ ban-relative-imports = "all"
 python-version = "3.12"
 
 [tool.ty.src]
-exclude = ["plugin", "build", "dist"]
+exclude = ["plugin", "build", "dist", "tests/e2e"]
