@@ -93,9 +93,19 @@ task) that Amplifier already ran in the session's directory. opencode's permissi
 key for commands, `edit` for file changes, `read` for reads and searches, `webfetch` for web requests, and `mcp` for MCP
 tools. Esc stops the turn.
 
+A turn that edits or searches spans several opencode steps: opencode's edit, patch, glob, and grep tools show
+Amplifier's calls with their diffs and match counts, and never run them again. These tools stay allowed for the
+amplifier agent; Amplifier asks for the effects they show.
+
+opencode's skills (`.opencode/skills`, `.claude/skills`, `.agents/skills`, global ones, and config `skills`) and its
+enabled MCP servers reach Amplifier too. Amplifier restarts when they change, and once after a crash.
+
 The plugin reports each turn's usage so opencode's context meter shows the size of Amplifier's last model request
 against the model's window, and its cost shows what Amplifier reports. opencode's own compaction keeps the transcript
 unchanged; Amplifier compacts its session itself.
+
+The sidebar's Amplifier usage panel shows tokens in and out, cache reads and writes, and cost for each provider and
+model, for the last turn and the session, and how often Amplifier compacted the session.
 
 ## Troubleshooting
 
