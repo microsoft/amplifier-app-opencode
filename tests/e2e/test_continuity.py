@@ -101,3 +101,30 @@ def test_a_session_continues_after_opencode_compacts_it(opencode: Twin, tmp_path
     assert list(durable_sessions(sessions)) == [session]
     assert durable_sessions(sessions)[session]["turn_count"] == 2
     assert [turn["result"]["state"] for turn in turns(sessions, session)] == ["success", "success"]
+
+
+def test_a_session_continues_after_a_revert_and_in_a_fork(opencode: Twin) -> None:
+    project = opencode.project("continuity-history")
+    first = opencode.opencode_run(project, "My favorite color is teal. Reply with exactly the word noted")
+    second = opencode.opencode_run(
+        project, "My favorite animal is the otter. Reply with exactly the word noted", "--session", first.session_id
+    )
+    # As the TUI's undo does: stage a revert at the last user message; the next prompt commits it.
+    users = [message for message in opencode.export(first.session_id)["messages"] if message["type"] == "user"]
+    stage = json.dumps({"messageID": users[-1]["id"]})
+    opencode.check(
+        f"opencode api session.revert.stage --param sessionID={first.session_id} -d {shlex.quote(stage)}",
+        workdir=project,
+    )
+
+    question = "What is my favorite color? Reply with only the color"
+    reverted = opencode.opencode_run(project, question, "--session", first.session_id)
+    forked = opencode.opencode_run(project, question, "--session", first.session_id, "--fork")
+
+    assert word(first.text) == word(second.text) == "noted"
+    assert reverted.session_id == first.session_id
+    assert word(reverted.text) == "teal"
+    users = [message for message in opencode.export(first.session_id)["messages"] if message["type"] == "user"]
+    assert len(users) == 2, "the reverted message is still in the session"
+    assert forked.session_id != first.session_id
+    assert word(forked.text) == "teal"

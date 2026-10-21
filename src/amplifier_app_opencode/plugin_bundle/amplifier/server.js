@@ -13,6 +13,7 @@ var __export = (target, all) => {
 
 // src/index.ts
 import { createHash as createHash3 } from "crypto";
+import path5 from "path";
 
 // src/credentials.ts
 var INTEGRATIONS = ["anthropic", "openai", "google", "github-copilot", "azure"];
@@ -1126,6 +1127,20 @@ ${content}` : failure,
 
 // src/language.ts
 var PROVIDER = "amplifier";
+function served() {
+  const key = Symbol.for("amplifier-opencode.served");
+  const scope = globalThis;
+  scope[key] ??= new Map;
+  return scope[key];
+}
+function serve(directory, context) {
+  const entry = { context, model: (modelId) => new AmplifierLanguageModel(modelId, directory, context) };
+  served().set(directory, entry);
+  return () => {
+    if (served().get(directory) === entry)
+      served().delete(directory);
+  };
+}
 var turns = new Map;
 var lastFinish = new Map;
 function interrupt(sessionID) {
@@ -1161,12 +1176,14 @@ async function failure(response) {
 
 class AmplifierLanguageModel {
   modelId;
+  directory;
   context;
   specificationVersion = "v3";
   provider = PROVIDER;
   supportedUrls = {};
-  constructor(modelId, context) {
+  constructor(modelId, directory, context) {
     this.modelId = modelId;
+    this.directory = directory;
     this.context = context;
   }
   async doGenerate(options) {
@@ -1190,6 +1207,9 @@ class AmplifierLanguageModel {
     return { content, finishReason: finish.finishReason, usage: finish.usage, warnings: [] };
   }
   async doStream(options) {
+    const current = served().get(this.directory);
+    if (current && current.context !== this.context)
+      return current.model(this.modelId).doStream(options);
     const sessionID = header(options.headers, "x-opencode-session-id");
     const continues = options.prompt.at(-1)?.role === "tool";
     let turn = sessionID ? turns.get(sessionID) : undefined;
@@ -1429,6 +1449,8 @@ class Turn {
 }
 
 // src/usage-book.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, renameSync, writeFileSync } from "fs";
+import path4 from "path";
 function record3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
 }
@@ -1471,11 +1493,63 @@ function addRows(a, b) {
   }
   return [...rows.values()];
 }
+function savedRows(value) {
+  return (Array.isArray(value) ? value : []).map((item) => {
+    const row = record3(item);
+    return {
+      provider: typeof row.provider === "string" ? row.provider : "unknown",
+      model: typeof row.model === "string" ? row.model : "unknown",
+      tokensIn: count4(row.tokensIn),
+      tokensOut: count4(row.tokensOut),
+      cacheRead: count4(row.cacheRead),
+      cacheWrite: count4(row.cacheWrite),
+      costUSD: count4(row.costUSD)
+    };
+  });
+}
 
 class UsageBook {
+  directory;
   books = new Map;
+  constructor(directory) {
+    this.directory = directory;
+  }
+  file(sessionID) {
+    return this.directory && /^[\w-]+$/.test(sessionID) ? path4.join(this.directory, `${sessionID}.json`) : undefined;
+  }
+  load(sessionID) {
+    const known = this.books.get(sessionID);
+    if (known)
+      return known;
+    const file = this.file(sessionID);
+    if (!file)
+      return;
+    let saved;
+    try {
+      saved = record3(JSON.parse(readFileSync3(file, "utf8")));
+    } catch {
+      return;
+    }
+    const compactions = count4(saved.compactions) ?? 0;
+    const book = { done: savedRows(saved.done), turn: savedRows(saved.turn), running: false, compactions };
+    this.books.set(sessionID, book);
+    return book;
+  }
+  save(sessionID, book) {
+    const file = this.file(sessionID);
+    if (!file)
+      return;
+    try {
+      mkdirSync2(path4.dirname(file), { recursive: true });
+      const { done, turn, compactions } = book;
+      writeFileSync(`${file}.tmp`, JSON.stringify({ done, turn, compactions }));
+      renameSync(`${file}.tmp`, file);
+    } catch (error) {
+      log(`could not save the Amplifier usage of ${sessionID}: ${error.message}`);
+    }
+  }
   get(sessionID) {
-    const book = this.books.get(sessionID);
+    const book = this.load(sessionID);
     if (!book)
       return { sessionID, turn: [], session: [], compactions: 0 };
     return {
@@ -1486,7 +1560,7 @@ class UsageBook {
     };
   }
   observe(sessionID, envelope) {
-    let book = this.books.get(sessionID);
+    let book = this.load(sessionID);
     if (!book) {
       book = { done: [], turn: [], running: false, compactions: 0 };
       this.books.set(sessionID, book);
@@ -1511,6 +1585,7 @@ class UsageBook {
         if (book.running)
           book.done = addRows(book.done, book.turn);
         book.running = false;
+        this.save(sessionID, book);
         return this.get(sessionID);
       default:
         return;
@@ -1585,8 +1660,9 @@ var plugin = {
     const live = { face: undefined, entries: [], fingerprint: resolved.fingerprint, ready: async () => {} };
     if (!(face instanceof Error))
       show(live, face, options);
+    let unserve;
     try {
-      await register2(ctx, live, options, stale);
+      unserve = await register2(ctx, live, options, stale);
     } catch (error) {
       live.face?.stop();
       throw error;
@@ -1594,6 +1670,7 @@ var plugin = {
     const watching = new AbortController;
     watchEvents(ctx, live, options, directory, mcp, watching.signal);
     return () => {
+      unserve();
       watching.abort();
       live.face?.stop();
     };
@@ -1839,7 +1916,7 @@ async function register2(ctx, live, options, stale) {
     event.sdk ??= {};
   }, SCOPE);
   const asks = options.approvals === "opencode";
-  const book = new UsageBook;
+  const book = new UsageBook(path5.join(stateDirectory(), "usage"));
   let usageEvents;
   try {
     const registration = await ctx.rpc.register(USAGE_RPC, {
@@ -1853,25 +1930,27 @@ async function register2(ctx, live, options, stale) {
     for (const id of PROXY_TOOLS) {
       tools.update(id, (tool) => {
         const original = tool.execute;
-        tool.execute = async (input, context) => {
-          if (!registered(context.id))
-            return original(input, context);
-          return await wait(context.id, context.signal);
+        tool.execute = async (input, context2) => {
+          if (!registered(context2.id))
+            return original(input, context2);
+          return await wait(context2.id, context2.signal);
         };
       });
     }
   });
+  const directory = ctx.location.directory;
+  const context = {
+    face: () => live.ready().then(() => live.face),
+    asks,
+    assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID }),
+    observe: (sessionID, envelope) => {
+      const usage = book.observe(sessionID, envelope);
+      if (usage)
+        usageEvents?.emit("usage", usage).catch(() => {});
+    }
+  };
   await ctx.aisdk.hook("language", (event) => {
-    event.language = new AmplifierLanguageModel(String(event.model.modelID ?? event.model.id), {
-      face: () => live.ready().then(() => live.face),
-      asks,
-      assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID }),
-      observe: (sessionID, envelope) => {
-        const usage = book.observe(sessionID, envelope);
-        if (usage)
-          usageEvents?.emit("usage", usage).catch(() => {});
-      }
-    });
+    event.language = new AmplifierLanguageModel(String(event.model.modelID ?? event.model.id), directory, context);
   }, SCOPE);
   await ctx.session.hook("context", (event) => {
     const tools = event.tools;
@@ -1892,6 +1971,7 @@ async function register2(ctx, live, options, stale) {
   await ctx.session.hook("retry", (event) => {
     event.decision = { retry: false };
   }, SCOPE);
+  return serve(directory, context);
 }
 var src_default = plugin;
 export {

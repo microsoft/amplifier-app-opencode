@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto"
+import path from "node:path"
 import type { Plugin } from "@opencode/plugin"
 import { type Connection, faceEnvironment, INTEGRATIONS } from "./credentials.ts"
 import { commandVersion, type Face, type FaceSettings, log, startFace } from "./face.ts"
 import { type FaceInputs, type McpConfig, mcpServers, NO_INPUTS, skillDirectories } from "./inputs.ts"
 import { DEFAULT_MODEL_KEY, defaultModelKey, type ModelEntry, modelEntries, titleFrom } from "./mapping.ts"
-import { AmplifierLanguageModel, interrupt, PROVIDER } from "./language.ts"
-import { faceApprovals, type Options, readOptions } from "./options.ts"
+import { AmplifierLanguageModel, interrupt, type LanguageContext, PROVIDER, serve } from "./language.ts"
+import { faceApprovals, type Options, readOptions, stateDirectory } from "./options.ts"
 import * as proxy from "./proxy.ts"
 import { PROXY_TOOLS } from "./proxy.ts"
 import { CARRIER_COST } from "./usage.ts"
@@ -75,8 +76,9 @@ const plugin: Plugin.Plugin = {
 
     const live: Live = { face: undefined, entries: [], fingerprint: resolved.fingerprint, ready: async () => {} }
     if (!(face instanceof Error)) show(live, face, options)
+    let unserve: () => void
     try {
-      await register(ctx, live, options, stale)
+      unserve = await register(ctx, live, options, stale)
     } catch (error) {
       live.face?.stop()
       throw error
@@ -84,6 +86,7 @@ const plugin: Plugin.Plugin = {
     const watching = new AbortController()
     watchEvents(ctx, live, options, directory, mcp, watching.signal)
     return () => {
+      unserve()
       watching.abort()
       live.face?.stop()
     }
@@ -328,7 +331,8 @@ const PERMISSIONS = [
   ),
 ]
 
-async function register(ctx: Plugin.Context, live: Live, options: Options, stale: boolean): Promise<void> {
+/** Register the provider, agent, and hooks; returns the function that stops serving the location's turns. */
+async function register(ctx: Plugin.Context, live: Live, options: Options, stale: boolean): Promise<() => void> {
   const { defaultModel, setDefaultAgent } = options
   await ctx.provider.transform((providers) => {
     const face = live.face
@@ -387,7 +391,7 @@ async function register(ctx: Plugin.Context, live: Live, options: Options, stale
   )
 
   const asks = options.approvals === "opencode"
-  const book = new UsageBook()
+  const book = new UsageBook(path.join(stateDirectory(), "usage"))
   let usageEvents: { emit(name: "usage", data: never): Promise<void> } | undefined
   try {
     const registration = await ctx.rpc.register(USAGE_RPC as never, {
@@ -410,18 +414,20 @@ async function register(ctx: Plugin.Context, live: Live, options: Options, stale
       })
     }
   })
+  const directory = ctx.location.directory
+  const context: LanguageContext = {
+    face: () => live.ready().then(() => live.face),
+    asks,
+    assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID as never }),
+    observe: (sessionID, envelope) => {
+      const usage = book.observe(sessionID, envelope)
+      if (usage) usageEvents?.emit("usage", usage as never).catch(() => {})
+    },
+  }
   await ctx.aisdk.hook(
     "language",
     (event) => {
-      event.language = new AmplifierLanguageModel(String(event.model.modelID ?? event.model.id), {
-        face: () => live.ready().then(() => live.face),
-        asks,
-        assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID as never }),
-        observe: (sessionID, envelope) => {
-          const usage = book.observe(sessionID, envelope)
-          if (usage) usageEvents?.emit("usage", usage as never).catch(() => {})
-        },
-      })
+      event.language = new AmplifierLanguageModel(String(event.model.modelID ?? event.model.id), directory, context)
     },
     SCOPE,
   )
@@ -471,6 +477,7 @@ async function register(ctx: Plugin.Context, live: Live, options: Options, stale
     },
     SCOPE,
   )
+  return serve(directory, context)
 }
 
 export default plugin

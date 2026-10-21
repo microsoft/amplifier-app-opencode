@@ -31,6 +31,32 @@ export interface LanguageContext {
   observe?(sessionID: string, envelope: Envelope): void
 }
 
+/** What a plugin instance serves its location's turns with. */
+interface Served {
+  readonly context: LanguageContext
+  model(modelId: string): LanguageModelV3
+}
+
+/**
+ * The plugin instance serving each location directory. It lives on `globalThis` so a language model opencode cached
+ * from an earlier load of the plugin, after a reinstall or reload, still finds the instance that runs now.
+ */
+function served(): Map<string, Served> {
+  const key = Symbol.for("amplifier-opencode.served")
+  const scope = globalThis as unknown as Record<symbol, Map<string, Served> | undefined>
+  scope[key] ??= new Map()
+  return scope[key]
+}
+
+/** Serve the turns of a location with `context`, until the returned function is called. */
+export function serve(directory: string, context: LanguageContext): () => void {
+  const entry: Served = { context, model: (modelId) => new AmplifierLanguageModel(modelId, directory, context) }
+  served().set(directory, entry)
+  return () => {
+    if (served().get(directory) === entry) served().delete(directory)
+  }
+}
+
 /** The Amplifier turn of each opencode session, kept across the steps it spans. */
 const turns = new Map<string, Turn>()
 /** The finish of each session's last step, for a step that continues a turn that already ended. */
@@ -75,7 +101,8 @@ async function failure(response: Response): Promise<Error> {
 /**
  * Amplifier Agent as an AI SDK language model. One `doStream` is one Amplifier turn through the face's turns endpoint:
  * the newest user message continues the face session derived from the opencode session, and the turn's events become
- * text, reasoning, and hosted tool calls with their results.
+ * text, reasoning, and hosted tool calls with their results. opencode caches a model across plugin reloads, so each
+ * `doStream` runs on the plugin instance serving the model's location when it is not the one that created the model.
  */
 export class AmplifierLanguageModel implements LanguageModelV3 {
   readonly specificationVersion = "v3"
@@ -84,6 +111,7 @@ export class AmplifierLanguageModel implements LanguageModelV3 {
 
   constructor(
     readonly modelId: string,
+    private readonly directory: string,
     private readonly context: LanguageContext,
   ) {}
 
@@ -104,6 +132,8 @@ export class AmplifierLanguageModel implements LanguageModelV3 {
   }
 
   async doStream(options: LanguageModelV3CallOptions) {
+    const current = served().get(this.directory)
+    if (current && current.context !== this.context) return current.model(this.modelId).doStream(options)
     const sessionID = header(options.headers, "x-opencode-session-id")
     const continues = options.prompt.at(-1)?.role === "tool"
     let turn = sessionID ? turns.get(sessionID) : undefined

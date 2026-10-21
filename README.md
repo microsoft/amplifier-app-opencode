@@ -105,7 +105,8 @@ against the model's window, and its cost shows what Amplifier reports. opencode'
 unchanged; Amplifier compacts its session itself.
 
 The sidebar's Amplifier usage panel shows tokens in and out, cache reads and writes, and cost for each provider and
-model, for the last turn and the session, and how often Amplifier compacted the session.
+model, for the last turn and the session, and how often Amplifier compacted the session. Session totals are kept in
+`~/.local/state/amplifier-opencode/usage/` and survive restarts.
 
 ## Troubleshooting
 

@@ -1,3 +1,6 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import path from "node:path"
+import { log } from "./face.ts"
 import type { Envelope } from "./turns.ts"
 
 /** What one provider and model used. A value Amplifier did not report is null. */
@@ -83,12 +86,67 @@ interface Book {
   compactions: number
 }
 
-/** The usage of each opencode session's turns, from their events, while the plugin runs. */
+/** Rows as UsageBook saves them. */
+function savedRows(value: unknown): UsageRow[] {
+  return (Array.isArray(value) ? value : []).map((item) => {
+    const row = record(item)
+    return {
+      provider: typeof row.provider === "string" ? row.provider : "unknown",
+      model: typeof row.model === "string" ? row.model : "unknown",
+      tokensIn: count(row.tokensIn),
+      tokensOut: count(row.tokensOut),
+      cacheRead: count(row.cacheRead),
+      cacheWrite: count(row.cacheWrite),
+      costUSD: count(row.costUSD),
+    }
+  })
+}
+
+/**
+ * The usage of each opencode session's turns, from their events. With a directory, each session's usage is saved to
+ * `<directory>/<session>.json` when a turn ends and read back the first time the session is asked for.
+ */
 export class UsageBook {
   private readonly books = new Map<string, Book>()
 
+  constructor(private readonly directory?: string) {}
+
+  private file(sessionID: string): string | undefined {
+    return this.directory && /^[\w-]+$/.test(sessionID) ? path.join(this.directory, `${sessionID}.json`) : undefined
+  }
+
+  private load(sessionID: string): Book | undefined {
+    const known = this.books.get(sessionID)
+    if (known) return known
+    const file = this.file(sessionID)
+    if (!file) return undefined
+    let saved: Record<string, unknown>
+    try {
+      saved = record(JSON.parse(readFileSync(file, "utf8")))
+    } catch {
+      return undefined
+    }
+    const compactions = count(saved.compactions) ?? 0
+    const book = { done: savedRows(saved.done), turn: savedRows(saved.turn), running: false, compactions }
+    this.books.set(sessionID, book)
+    return book
+  }
+
+  private save(sessionID: string, book: Book): void {
+    const file = this.file(sessionID)
+    if (!file) return
+    try {
+      mkdirSync(path.dirname(file), { recursive: true })
+      const { done, turn, compactions } = book
+      writeFileSync(`${file}.tmp`, JSON.stringify({ done, turn, compactions }))
+      renameSync(`${file}.tmp`, file)
+    } catch (error) {
+      log(`could not save the Amplifier usage of ${sessionID}: ${(error as Error).message}`)
+    }
+  }
+
   get(sessionID: string): SessionUsage {
-    const book = this.books.get(sessionID)
+    const book = this.load(sessionID)
     if (!book) return { sessionID, turn: [], session: [], compactions: 0 }
     return {
       sessionID,
@@ -100,7 +158,7 @@ export class UsageBook {
 
   /** Record one turn event; returns the session's usage when the event changed it. */
   observe(sessionID: string, envelope: Envelope): SessionUsage | undefined {
-    let book = this.books.get(sessionID)
+    let book = this.load(sessionID)
     if (!book) {
       book = { done: [], turn: [], running: false, compactions: 0 }
       this.books.set(sessionID, book)
@@ -122,6 +180,7 @@ export class UsageBook {
         if (payload.usage) book.turn = usageRows(payload.usage)
         if (book.running) book.done = addRows(book.done, book.turn)
         book.running = false
+        this.save(sessionID, book)
         return this.get(sessionID)
       default:
         return undefined
