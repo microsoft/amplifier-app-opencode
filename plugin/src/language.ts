@@ -7,7 +7,9 @@ import type {
 import type { Face } from "./face.ts"
 import { log } from "./face.ts"
 import { sessionHeader } from "./mapping.ts"
-import { envelopes, permissionAsk, promptMessages, type ToolCall, TurnMapper } from "./turns.ts"
+import * as proxy from "./proxy.ts"
+import { PROXY_TOOLS } from "./proxy.ts"
+import { type Envelope, envelopes, permissionAsk, promptMessages, type ToolCall, TurnMapper } from "./turns.ts"
 
 export const PROVIDER = "amplifier"
 
@@ -24,14 +26,20 @@ export interface LanguageContext {
     save: string[]
     metadata: Record<string, unknown>
   }): Promise<void>
+  /** Sees every event of every turn, for the usage the plugin reports. */
+  observe?(sessionID: string, envelope: Envelope): void
 }
 
-/** The running turn of each opencode session, so an interrupted session stops its turn. */
-const running = new Map<string, AbortController>()
+/** The Amplifier turn of each opencode session, kept across the steps it spans. */
+const turns = new Map<string, Turn>()
+/** The finish of each session's last step, for a step that continues a turn that already ended. */
+const lastFinish = new Map<string, Extract<LanguageModelV3StreamPart, { type: "finish" }>>()
 
 /** Stop the turn running for an opencode session; closing its request makes the face cancel the turn. */
 export function interrupt(sessionID: string): void {
-  running.get(sessionID)?.abort(new Error("The opencode session was interrupted."))
+  const error = new Error("The opencode session was interrupted.")
+  turns.get(sessionID)?.abort(error)
+  proxy.rejectAll(error, sessionID)
 }
 
 function header(headers: Record<string, string | undefined> | undefined, name: string): string | undefined {
@@ -95,9 +103,29 @@ export class AmplifierLanguageModel implements LanguageModelV3 {
   }
 
   async doStream(options: LanguageModelV3CallOptions) {
+    const sessionID = header(options.headers, "x-opencode-session-id")
+    const continues = options.prompt.at(-1)?.role === "tool"
+    let turn = sessionID ? turns.get(sessionID) : undefined
+    if (turn && !continues) {
+      turn.abort(new Error("A newer turn started in this opencode session."))
+      turn = undefined
+    }
+    if (!turn && continues) {
+      // The turn that ran these tool calls already ended, or stopped; this step only closes it. Starting a turn here
+      // would send the last user message again.
+      const finish = (sessionID ? lastFinish.get(sessionID) : undefined) ?? EMPTY_FINISH
+      return { stream: finished(finish), request: { body: {} } }
+    }
+    if (!turn) {
+      turn = await this.start(options, sessionID)
+      if (sessionID) turns.set(sessionID, turn)
+    }
+    return { stream: turn.step(options.abortSignal), request: { body: turn.body } }
+  }
+
+  private async start(options: LanguageModelV3CallOptions, sessionID: string | undefined): Promise<Turn> {
     const face = this.context.face()
     if (!face) throw new Error("The Amplifier face is not running. Run: amplifier-opencode doctor")
-    const sessionID = header(options.headers, "x-opencode-session-id")
     const effort = options.providerOptions?.[PROVIDER]?.reasoningEffort
     const body = {
       model: this.modelId,
@@ -105,21 +133,9 @@ export class AmplifierLanguageModel implements LanguageModelV3 {
       ...(typeof effort === "string" ? { reasoning_effort: effort } : {}),
       ...(this.context.asks ? { approvals: "ask" } : {}),
     }
+    if (sessionID) proxy.forget(sessionID)
     const abort = new AbortController()
-    const forward = () => abort.abort(options.abortSignal?.reason)
-    options.abortSignal?.addEventListener("abort", forward, { once: true })
-    if (sessionID) {
-      running.get(sessionID)?.abort(new Error("A newer turn started in this opencode session."))
-      running.set(sessionID, abort)
-    }
-    const release = () => {
-      options.abortSignal?.removeEventListener("abort", forward)
-      if (sessionID && running.get(sessionID) === abort) running.delete(sessionID)
-    }
-
-    let response: Response
-    try {
-      response = await fetch(`${face.baseURL}/amplifier/turns`, {
+    const response = await fetch(`${face.baseURL}/amplifier/turns`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${face.token}`,
@@ -127,18 +143,16 @@ export class AmplifierLanguageModel implements LanguageModelV3 {
           ...(sessionID ? { "Amplifier-Session-Id": sessionHeader(sessionID) } : {}),
         },
         body: JSON.stringify(body),
-        signal: abort.signal,
-      })
-    } catch (error) {
-      release()
-      throw error
-    }
-    if (!response.ok || !response.body) {
-      release()
-      throw await failure(response)
-    }
+      signal: abort.signal,
+    })
+    if (!response.ok || !response.body) throw await failure(response)
 
-    const mapper = new TurnMapper(this.modelId)
+    // Proxied calls need a later step in the same session, so a request without one keeps every call hosted.
+    const offered = new Set((options.tools ?? []).map((tool) => tool.name).filter((name) => PROXY_TOOLS.includes(name)))
+    const mapper = new TurnMapper(this.modelId, sessionID ? { offered, sink: proxy, sessionID } : {})
+    const turn = new Turn(body, mapper, abort, () => {
+      if (sessionID && turns.get(sessionID) === turn) turns.delete(sessionID)
+    })
     const calls = new Map<string, ToolCall>()
     const answer = (requestID: string, decision: "allow" | "deny" | "cancel", reason?: string) => {
       if (abort.signal.aborted) return
@@ -172,44 +186,149 @@ export class AmplifierLanguageModel implements LanguageModelV3 {
     }
 
     const reader = response.body.pipeThrough(envelopes()).getReader()
-    const read = async (): Promise<LanguageModelV3StreamPart[]> => {
-      if (mapper.done) return []
-      let result: Awaited<ReturnType<typeof reader.read>>
-      try {
-        result = await reader.read()
-      } catch (error) {
-        return mapper.fail(abort.signal.aborted ? new Error("The Amplifier turn was cancelled.") : error)
+    void (async () => {
+      while (!mapper.done) {
+        let result: Awaited<ReturnType<typeof reader.read>>
+        try {
+          result = await reader.read()
+        } catch (error) {
+          turn.push(mapper.fail(abort.signal.aborted ? new Error("The Amplifier turn was cancelled.") : error))
+          break
+        }
+        if (result.done) {
+          turn.push(mapper.fail(new Error("The Amplifier face ended the turn without a result.")))
+          break
+        }
+        const envelope = result.value
+        if (envelope.type === "tool_call") {
+          const call = envelope.payload.call as ToolCall | undefined
+          if (call?.call_id) calls.set(call.call_id, call)
+        } else if (envelope.type === "approval_request" && this.context.asks) {
+          // Without `approvals: "ask"` the face's policy already answered.
+          void approve((envelope.payload.request ?? {}) as Record<string, unknown>)
+        }
+        if (sessionID) this.context.observe?.(sessionID, envelope)
+        turn.push(mapper.map(envelope))
       }
-      if (result.done) return mapper.fail(new Error("The Amplifier face ended the turn without a result."))
-      const envelope = result.value
-      if (envelope.type === "tool_call") {
-        const call = envelope.payload.call as ToolCall | undefined
-        if (call?.call_id) calls.set(call.call_id, call)
-      } else if (envelope.type === "approval_request" && this.context.asks) {
-        // Without `approvals: "ask"` the face's policy already answered.
-        void approve((envelope.payload.request ?? {}) as Record<string, unknown>)
-      }
-      return mapper.map(envelope)
-    }
+      turn.end()
+      reader.releaseLock()
+    })()
+    return turn
+  }
+}
 
-    const stream = new ReadableStream<LanguageModelV3StreamPart>({
-      async pull(controller) {
-        for (;;) {
-          const parts = await read()
-          for (const part of parts) controller.enqueue(part)
-          if (mapper.done) {
-            release()
-            controller.close()
-            return
-          }
-          if (parts.length > 0) return
+const EMPTY_FINISH: LanguageModelV3StreamPart = {
+  type: "finish",
+  finishReason: { unified: "stop", raw: "success" },
+  usage: {
+    inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+  },
+}
+
+/** A stream of one step that only finishes. */
+function finished(finish: LanguageModelV3StreamPart): ReadableStream<LanguageModelV3StreamPart> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue({ type: "stream-start", warnings: [] })
+      controller.enqueue(finish)
+      controller.close()
+    },
+  })
+}
+
+/**
+ * One Amplifier turn: its events, read as they arrive and mapped to stream parts, wait in order for the steps that
+ * show them. A step ends at a `tool-calls` finish; the next step continues with the parts after it.
+ */
+class Turn {
+  private readonly parts: LanguageModelV3StreamPart[] = []
+  private wake: (() => void) | undefined
+  private ended = false
+  private steps = 0
+
+  constructor(
+    readonly body: Record<string, unknown>,
+    private readonly mapper: TurnMapper,
+    private readonly controller: AbortController,
+    private readonly release: () => void,
+  ) {}
+
+  push(parts: LanguageModelV3StreamPart[]): void {
+    if (parts.length === 0) return
+    this.parts.push(...parts)
+    this.wake?.()
+  }
+
+  end(): void {
+    this.ended = true
+    this.wake?.()
+  }
+
+  abort(reason: unknown): void {
+    this.controller.abort(reason)
+    this.release()
+  }
+
+  private async next(): Promise<LanguageModelV3StreamPart | undefined> {
+    while (this.parts.length === 0) {
+      if (this.ended) return undefined
+      await new Promise<void>((wake) => {
+        this.wake = wake
+      })
+      this.wake = undefined
+    }
+    return this.parts.shift()
+  }
+
+  /** The stream of the turn's next step. Aborting the step, or cancelling its stream, cancels the turn. */
+  step(signal: AbortSignal | undefined): ReadableStream<LanguageModelV3StreamPart> {
+    const first = this.steps++ === 0
+    const forward = () => this.abort(signal?.reason)
+    signal?.addEventListener("abort", forward, { once: true })
+    const done = () => signal?.removeEventListener("abort", forward)
+    let finished = false
+    let started = first
+    return new ReadableStream<LanguageModelV3StreamPart>({
+      pull: async (controller) => {
+        if (!started) {
+          started = true
+          for (const part of this.mapper.stepStart()) controller.enqueue(part)
+          return
+        }
+        const part = await this.next()
+        if (!part) {
+          if (!finished) controller.enqueue(this.mapper.emptyFinish())
+          done()
+          this.release()
+          controller.close()
+          return
+        }
+        controller.enqueue(part)
+        if (part.type !== "finish") return
+        finished = true
+        this.remember(part)
+        if (part.finishReason.unified === "tool-calls") {
+          done()
+          controller.close()
         }
       },
-      cancel(reason) {
-        release()
-        abort.abort(reason)
+      cancel: (reason) => {
+        done()
+        this.abort(reason)
       },
     })
-    return { stream, request: { body } }
+  }
+
+  private remember(part: Extract<LanguageModelV3StreamPart, { type: "finish" }>): void {
+    const session = this.mapper.session
+    if (!session) return
+    // A step that only closes the turn shows its context size again and costs nothing.
+    const inputTokens = { ...part.usage.inputTokens, cacheWrite: 0 }
+    lastFinish.set(session, {
+      ...part,
+      finishReason: { unified: "stop", raw: "success" },
+      usage: { ...part.usage, inputTokens },
+    })
   }
 }

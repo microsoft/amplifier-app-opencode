@@ -49,3 +49,30 @@ def test_the_tui_shows_amplifiers_reply_and_continues_after_compact(opencode: Tw
     session = session_header(latest["id"])
     assert durable_sessions(sessions)[session]["turn_count"] == 2
     assert [turn["result"]["state"] for turn in turns(sessions, session)] == ["success", "success"]
+
+
+def test_the_tui_shows_an_edits_diff_and_amplifiers_usage(opencode: Twin) -> None:
+    project = opencode.project("tui-edit")
+    opencode.check(f"printf 'alpha\\nbeta\\ngamma\\n' > {project}/notes.txt")
+    session = f"{SESSION}-edit"
+    tui = Tui.start(opencode, project, session)
+
+    def shown(pattern: str) -> bool:
+        return any(re.search(pattern, line) for line in tui.screen())
+
+    try:
+        tui.send(
+            "In notes.txt replace the line beta with BETA, editing the file in place. Then reply with exactly the word done"
+        )
+        assert wait_for(lambda: shown(r"(^|\s)done$") and tui.idle(), timeout=180), tui.text()
+        # The diff of the edit, with its removed and added lines.
+        assert shown(r"-\s*beta\b"), tui.text()
+        assert shown(r"\+\s*BETA\b"), tui.text()
+        # The sidebar's usage panel: the model that ran, and what the turn cost.
+        assert tui.shows("Amplifier usage"), tui.text()
+        assert tui.shows("openai/gpt-6.1-sol"), tui.text()
+        assert shown(r"Turn \$\d+\.\d{4}"), tui.text()
+        assert shown(r"Session \$\d+\.\d{4}"), tui.text()
+    finally:
+        tui.close()
+    assert opencode.read(f"{project}/notes.txt") == "alpha\nBETA\ngamma\n"

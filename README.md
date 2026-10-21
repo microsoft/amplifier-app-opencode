@@ -79,7 +79,7 @@ command           the amplifier-opencode executable the plugin starts
 Amplifier also reads its own settings from `~/.amplifier-agent/config.json` and `AMPLIFIER_AGENT_*` variables; see
 [configuration](https://github.com/microsoft/amplifier-agent/blob/main/docs/configuration.md).
 
-`amplifier-opencode install --project DIR` installs the plugin for one project, in `DIR/.opencode/plugins/`.
+`amplifier-opencode install --project DIR` installs the plugin for one project, in `DIR/.opencode/plugins/amplifier/`.
 `amplifier-opencode uninstall` removes it.
 
 ## How it works

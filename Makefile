@@ -2,7 +2,7 @@
 SHELL := /bin/bash
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"$$/\1/p' pyproject.toml)
-BUNDLE := src/amplifier_app_opencode/plugin_bundle/amplifier.js
+BUNDLE := src/amplifier_app_opencode/plugin_bundle/amplifier
 AMPLIFIER_AGENT_DIR ?= ../amplifier-agent
 # Resolve git+https://github.com/microsoft/amplifier-agent from a local checkout instead of GitHub.
 LOCAL_AGENT := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.$(abspath $(AMPLIFIER_AGENT_DIR)).insteadOf \
@@ -21,15 +21,19 @@ plugin/node_modules: plugin/package.json plugin/bun.lock
 
 plugin-deps: plugin/node_modules ## Install the plugin's development dependencies
 
+# The plugin directory opencode loads: server.js, built, and tui.tsx, which opencode compiles when it loads it.
 define build_plugin
+	mkdir -p $(1)
 	cd plugin && bun build src/index.ts --target bun --format esm \
 		--external @opencode/plugin --external effect \
 		--define 'AMPLIFIER_OPENCODE_VERSION="$(VERSION)"' \
 		--banner '// amplifier-opencode-plugin $(VERSION)' \
-		--outfile $(1) >/dev/null
+		--outfile $(1)/server.js >/dev/null
+	{ echo '// amplifier-opencode-plugin $(VERSION)'; cat plugin/tui/tui.tsx; } > $(1)/tui.tsx
 endef
 
 plugin: plugin/node_modules ## Build the plugin bundle into the package
+	rm -rf $(BUNDLE)
 	$(call build_plugin,$(abspath $(BUNDLE)))
 
 check: plugin/node_modules ## Lint, type-check, and confirm the plugin bundle is up to date
@@ -37,8 +41,9 @@ check: plugin/node_modules ## Lint, type-check, and confirm the plugin bundle is
 	uv run ruff format --check src tests
 	uv run ty check --output-format concise --no-progress
 	cd plugin && bunx tsc --noEmit
-	$(call build_plugin,$(abspath build/amplifier.js))
-	@cmp -s build/amplifier.js $(BUNDLE) || { echo "$(BUNDLE) is out of date. Run: make plugin"; exit 1; }
+	rm -rf build/amplifier
+	$(call build_plugin,$(abspath build/amplifier))
+	@diff -r -q build/amplifier $(BUNDLE) >/dev/null || { echo "$(BUNDLE) is out of date. Run: make plugin"; exit 1; }
 
 test: plugin/node_modules ## Run the unit tests
 	uv run pytest

@@ -5,7 +5,10 @@ import { commandVersion, type Face, log, startFace } from "./face.ts"
 import { DEFAULT_MODEL_KEY, defaultModelKey, type ModelEntry, modelEntries, titleFrom } from "./mapping.ts"
 import { AmplifierLanguageModel, interrupt, PROVIDER } from "./language.ts"
 import { faceApprovals, type Options, readOptions } from "./options.ts"
+import * as proxy from "./proxy.ts"
+import { PROXY_TOOLS } from "./proxy.ts"
 import { CARRIER_COST } from "./usage.ts"
+import { UsageBook, USAGE_RPC } from "./usage-book.ts"
 
 declare const AMPLIFIER_OPENCODE_VERSION: string
 
@@ -183,14 +186,15 @@ function watchEvents(
  * The amplifier agent's permissions. opencode's defaults decide Amplifier's effects, which ask as opencode's own tools
  * do (`shell`, `edit`, `read`, `webfetch`, `mcp`, or the tool's name), and the user's permission rules follow these.
  * opencode's own tools are never offered to the model; the ones whose actions Amplifier's effects do not share are
- * denied as well.
+ * denied as well. `glob` and `grep` stay allowed: opencode shows Amplifier's searches through them, and a tool whose
+ * action is denied outright is not available at all. Amplifier asks for the effects those tools show before they run.
  */
 const PERMISSIONS = [
   { action: "*", resource: "*", effect: "allow" },
   { action: "read", resource: "*.env", effect: "ask" },
   { action: "read", resource: "*.env.*", effect: "ask" },
   { action: "read", resource: "*.env.example", effect: "allow" },
-  ...["glob", "grep", "websearch", "question", "todowrite", "subagent", "skill", "execute", "opencode_*"].map(
+  ...["websearch", "question", "todowrite", "subagent", "skill", "execute", "opencode_*"].map(
     (action) => ({ action, resource: "*", effect: "deny" }),
   ),
 ]
@@ -235,6 +239,8 @@ async function register(ctx: Plugin.Context, live: Live, options: Options, stale
       agent.mode = "primary"
       agent.hidden = false
       agent.model = { providerID: PROVIDER, id: defaultModelKey(live.entries, defaultModel) } as never
+      // A turn that shows proxied tool calls spans one step per batch of them; a step limit would cut the turn.
+      agent.steps = undefined as never
       // opencode adds the user's permission rules after these.
       const rules = agent.permissions as readonly { action: string; resource: string; effect: string }[]
       const defaults = rules.findIndex((rule, index) => JSON.stringify(rule) !== JSON.stringify(PERMISSIONS[index]))
@@ -252,6 +258,29 @@ async function register(ctx: Plugin.Context, live: Live, options: Options, stale
   )
 
   const asks = options.approvals === "opencode"
+  const book = new UsageBook()
+  let usageEvents: { emit(name: "usage", data: never): Promise<void> } | undefined
+  try {
+    const registration = await ctx.rpc.register(USAGE_RPC as never, {
+      usage: async (input: { sessionID: string }) => book.get(input.sessionID),
+    } as never)
+    usageEvents = (registration as unknown as { events: typeof usageEvents }).events
+  } catch (error) {
+    log(`could not offer Amplifier usage to the TUI: ${(error as Error).message}`)
+  }
+
+  await ctx.tool.transform((tools) => {
+    for (const id of PROXY_TOOLS) {
+      tools.update(id, (tool) => {
+        const original = tool.execute
+        tool.execute = async (input, context) => {
+          // A call the language model registered is Amplifier's: it already ran, so only its result is shown.
+          if (!proxy.registered(context.id)) return original(input, context)
+          return (await proxy.wait(context.id, context.signal)) as never
+        }
+      })
+    }
+  })
   await ctx.aisdk.hook(
     "language",
     (event) => {
@@ -259,6 +288,10 @@ async function register(ctx: Plugin.Context, live: Live, options: Options, stale
         face: () => live.face,
         asks,
         assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID as never }),
+        observe: (sessionID, envelope) => {
+          const usage = book.observe(sessionID, envelope)
+          if (usage) usageEvents?.emit("usage", usage as never).catch(() => {})
+        },
       })
     },
     SCOPE,
@@ -267,8 +300,13 @@ async function register(ctx: Plugin.Context, live: Live, options: Options, stale
   await ctx.session.hook(
     "context",
     (event) => {
-      // Amplifier runs its own tools, so opencode offers none of its own.
-      event.tools = {}
+      // Amplifier runs its own tools. Only the tools that show Amplifier's calls stay, so their calls can run. opencode
+      // offers `edit` or `patch` by the model's name; Amplifier may call either, so both stay. A definition opencode
+      // removed comes back by its name, and Amplifier never reads it.
+      const tools = event.tools as Record<string, { description: string; input: unknown }>
+      event.tools = Object.fromEntries(
+        PROXY_TOOLS.map((name) => [name, tools[name] ?? { description: name, input: { type: "object" } }]),
+      ) as never
     },
     SCOPE,
   )

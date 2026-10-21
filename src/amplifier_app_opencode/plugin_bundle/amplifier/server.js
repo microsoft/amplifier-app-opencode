@@ -1,5 +1,15 @@
 // @bun
 // amplifier-opencode-plugin 0.23.1
+var __defProp = Object.defineProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: (newValue) => all[name] = () => newValue
+    });
+};
 
 // src/index.ts
 import { createHash as createHash3 } from "crypto";
@@ -264,10 +274,166 @@ function titleFrom(text) {
   return line.length <= 60 ? line : `${line.slice(0, 57).trimEnd()}...`;
 }
 
+// src/proxy.ts
+var exports_proxy = {};
+__export(exports_proxy, {
+  wait: () => wait,
+  size: () => size,
+  resolve: () => resolve,
+  rejectAll: () => rejectAll,
+  reject: () => reject,
+  registered: () => registered,
+  register: () => register,
+  proxyResult: () => proxyResult,
+  forget: () => forget,
+  fileChanges: () => fileChanges,
+  PROXY_TOOLS: () => PROXY_TOOLS,
+  PROXIED: () => PROXIED,
+  FILE_CHANGES: () => FILE_CHANGES
+});
+var PROXIED = {
+  edit_file: "edit",
+  apply_patch: "patch",
+  glob: "glob",
+  grep: "grep"
+};
+var PROXY_TOOLS = [...new Set(Object.values(PROXIED))];
+var pending = new Map;
+function register(callID, sessionID) {
+  if (pending.has(callID))
+    return;
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, fail) => {
+    resolve = ok;
+    reject = fail;
+  });
+  promise.catch(() => {});
+  pending.set(callID, { sessionID, promise, resolve, reject, settled: false });
+}
+function registered(callID) {
+  return pending.has(callID);
+}
+function resolve(callID, result) {
+  const entry = pending.get(callID);
+  if (!entry || entry.settled)
+    return;
+  entry.settled = true;
+  entry.resolve(result);
+}
+function reject(callID, error) {
+  const entry = pending.get(callID);
+  if (!entry || entry.settled)
+    return;
+  entry.settled = true;
+  entry.reject(error);
+}
+function rejectAll(error, sessionID) {
+  for (const [callID, entry] of pending) {
+    if (sessionID === undefined || entry.sessionID === sessionID)
+      reject(callID, error);
+  }
+}
+async function wait(callID, signal) {
+  const entry = pending.get(callID);
+  if (!entry)
+    throw new Error(`No Amplifier tool call ${callID} is waiting.`);
+  try {
+    if (!signal)
+      return await entry.promise;
+    if (signal.aborted)
+      throw signal.reason ?? new Error("The tool call was interrupted.");
+    return await new Promise((ok, fail) => {
+      const abort = () => fail(signal.reason ?? new Error("The tool call was interrupted."));
+      signal.addEventListener("abort", abort, { once: true });
+      entry.promise.then(ok, fail).finally(() => signal.removeEventListener("abort", abort));
+    });
+  } finally {
+    pending.delete(callID);
+  }
+}
+function forget(sessionID) {
+  for (const [callID, entry] of pending)
+    if (entry.sessionID === sessionID && entry.settled)
+      pending.delete(callID);
+}
+function size() {
+  return pending.size;
+}
+var FILE_CHANGES = "com.microsoft.amplifier.file_changes";
+function count(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+function fileChanges(payload) {
+  const raw = payload[FILE_CHANGES];
+  if (!Array.isArray(raw))
+    return [];
+  return raw.flatMap((item) => {
+    const value = typeof item === "object" && item !== null ? item : {};
+    const change = value.change;
+    const additions = count(value.additions);
+    const deletions = count(value.deletions);
+    if (typeof value.path !== "string" || typeof value.patch !== "string" || change !== "added" && change !== "modified" && change !== "deleted" || additions === undefined || deletions === undefined)
+      return [];
+    return [{ path: value.path, change, patch: value.patch, additions, deletions }];
+  });
+}
+function fileDiff(change) {
+  return {
+    file: change.path,
+    patch: change.patch,
+    additions: change.additions,
+    deletions: change.deletions,
+    status: change.change
+  };
+}
+var PATCH_TYPES = { added: "add", modified: "update", deleted: "delete" };
+function searchResult(content) {
+  try {
+    const parsed = JSON.parse(content);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function lines(content) {
+  return content.split(`
+`).filter((line) => line.trim() !== "").length;
+}
+function grepMatches(content) {
+  const result = searchResult(content);
+  return count(result.matches_count) ?? count(result.total_matches) ?? lines(content);
+}
+function globCount(content) {
+  const result = searchResult(content);
+  return count(result.count) ?? count(result.total_files) ?? lines(content);
+}
+function proxyResult(tool, content, changes) {
+  const files = changes.map(fileDiff);
+  switch (tool) {
+    case "edit":
+      return { output: { files, replacements: files.length }, content, metadata: { files } };
+    case "patch": {
+      const applied = changes.map((change) => ({
+        type: PATCH_TYPES[change.change],
+        resource: change.path,
+        target: change.path
+      }));
+      return { output: { applied, files }, content, metadata: { files } };
+    }
+    case "glob":
+      return { output: [], content, metadata: { count: globCount(content), truncated: false } };
+    case "grep":
+      return { output: [], content, metadata: { matches: grepMatches(content), truncated: false } };
+    default:
+      return { output: undefined, content, metadata: {} };
+  }
+}
+
 // src/usage.ts
 var CONTEXT_FIELD = "com.microsoft.amplifier.context";
 var CARRIER_COST = [{ input: 0, output: 0, cache: { read: 0, write: 1e6 } }];
-function count(value) {
+function count2(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 function record(value) {
@@ -275,13 +441,13 @@ function record(value) {
 }
 function costUSD(value) {
   if (typeof value === "string" && value.trim() !== "")
-    return count(Number(value));
-  return count(value);
+    return count2(Number(value));
+  return count2(value);
 }
 function recordedUsage(usage) {
   const write = costUSD(usage.cost_usd) ?? 0;
   const details = record(usage.prompt_tokens_details) ?? {};
-  const tokens = count(record(usage[CONTEXT_FIELD])?.tokens);
+  const tokens = count2(record(usage[CONTEXT_FIELD])?.tokens);
   if (tokens !== undefined) {
     const { completion_tokens_details: _, ...rest } = usage;
     return {
@@ -292,11 +458,11 @@ function recordedUsage(usage) {
       prompt_tokens_details: { ...details, cached_tokens: 0, cache_write_tokens: write }
     };
   }
-  const prompt = count(usage.prompt_tokens);
-  const completion = count(usage.completion_tokens);
+  const prompt = count2(usage.prompt_tokens);
+  const completion = count2(usage.completion_tokens);
   if (prompt === undefined || completion === undefined)
     return usage;
-  const input = prompt - (count(details.cache_write_tokens) ?? 0) + write;
+  const input = prompt - (count2(details.cache_write_tokens) ?? 0) + write;
   return {
     ...usage,
     prompt_tokens: input,
@@ -388,27 +554,27 @@ function envelopeOf(event) {
 var BLANK_LINE = /(?:\r\n|\r(?!\n)|\n)(?:\r\n|\r(?!\n)|\n)/;
 function envelopes() {
   const decoder = new TextDecoder;
-  let pending = "";
+  let pending2 = "";
   const drain = (controller) => {
-    for (let match = BLANK_LINE.exec(pending);match; match = BLANK_LINE.exec(pending)) {
-      const envelope = envelopeOf(pending.slice(0, match.index));
-      pending = pending.slice(match.index + match[0].length);
+    for (let match = BLANK_LINE.exec(pending2);match; match = BLANK_LINE.exec(pending2)) {
+      const envelope = envelopeOf(pending2.slice(0, match.index));
+      pending2 = pending2.slice(match.index + match[0].length);
       if (envelope)
         controller.enqueue(envelope);
     }
   };
   return new TransformStream({
     transform(chunk, controller) {
-      pending += decoder.decode(chunk, { stream: true });
+      pending2 += decoder.decode(chunk, { stream: true });
       drain(controller);
     },
     flush(controller) {
-      pending += decoder.decode();
+      pending2 += decoder.decode();
       drain(controller);
-      const envelope = envelopeOf(pending);
+      const envelope = envelopeOf(pending2);
       if (envelope)
         controller.enqueue(envelope);
-      pending = "";
+      pending2 = "";
     }
   });
 }
@@ -494,7 +660,43 @@ function permissionAsk(call) {
       return { action: call.name, resources: ["*"], save: ["*"] };
   }
 }
-function count2(value) {
+function proxiedCall(call, offered) {
+  if (call.source === "mcp")
+    return;
+  const name = PROXIED[call.name];
+  if (!name || !offered.has(name))
+    return;
+  const args = record2(call.arguments);
+  const string = (value) => typeof value === "string" ? value : undefined;
+  switch (name) {
+    case "edit": {
+      const path3 = text(args.file_path);
+      const oldString = string(args.old_string);
+      const newString = string(args.new_string);
+      if (!path3 || oldString === undefined || newString === undefined)
+        return;
+      const replaceAll = typeof args.replace_all === "boolean" ? args.replace_all : undefined;
+      return { name, input: defined({ path: path3, oldString, newString, replaceAll }) };
+    }
+    case "patch": {
+      const patchText = text(args.patch) ?? text(args.diff);
+      return patchText ? { name, input: { patchText } } : undefined;
+    }
+    case "glob": {
+      const pattern = text(args.pattern);
+      return pattern ? { name, input: defined({ pattern, path: text(args.path) }) } : undefined;
+    }
+    case "grep": {
+      const pattern = text(args.pattern);
+      if (!pattern)
+        return;
+      return { name, input: defined({ pattern, path: text(args.path), include: text(args.glob) }) };
+    }
+    default:
+      return;
+  }
+}
+function count3(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 function total(entries, read) {
@@ -507,17 +709,29 @@ function total(entries, read) {
   }
   return sum;
 }
-function turnUsage(snapshot, context) {
-  const entries = Array.isArray(record2(snapshot).entries) ? record2(snapshot).entries : [];
-  const items = entries.map(record2);
-  const tokensIn = total(items, (entry) => count2(entry.tokens_in));
-  const tokensOut = total(items, (entry) => count2(entry.tokens_out));
-  const cacheRead = total(items, (entry) => count2(entry.cache_read_tokens));
-  const cacheWrite = total(items, (entry) => count2(entry.cache_write_tokens) ?? 0);
-  const cost = total(items, (entry) => {
-    const usd = record2(entry.cost).USD;
-    return typeof usd === "string" && usd.trim() !== "" ? count2(Number(usd)) : undefined;
-  });
+function entriesOf(snapshot) {
+  const entries = record2(snapshot).entries;
+  return (Array.isArray(entries) ? entries : []).map(record2);
+}
+function usd(entry) {
+  const value = record2(entry.cost).USD;
+  return typeof value === "string" && value.trim() !== "" ? count3(Number(value)) : undefined;
+}
+function snapshotCost(snapshot) {
+  const entries = entriesOf(snapshot);
+  return entries.length > 0 ? total(entries, usd) : undefined;
+}
+function snapshotKnown(snapshot) {
+  const entries = entriesOf(snapshot);
+  return entries.length > 0 && entries.every((entry) => count3(entry.tokens_in) !== undefined && count3(entry.tokens_out) !== undefined && count3(entry.cache_read_tokens) !== undefined && usd(entry) !== undefined);
+}
+function turnUsage(snapshot, context, costBefore = 0) {
+  const items = entriesOf(snapshot);
+  const tokensIn = total(items, (entry) => count3(entry.tokens_in));
+  const tokensOut = total(items, (entry) => count3(entry.tokens_out));
+  const cacheRead = total(items, (entry) => count3(entry.cache_read_tokens));
+  const cacheWrite = total(items, (entry) => count3(entry.cache_write_tokens) ?? 0);
+  const cost = snapshotCost(snapshot);
   const usage = {};
   if (items.length > 0 && tokensIn !== undefined && tokensOut !== undefined) {
     const prompt2 = tokensIn + (cacheWrite ?? 0);
@@ -526,17 +740,17 @@ function turnUsage(snapshot, context) {
     usage.total_tokens = prompt2 + tokensOut;
     usage.prompt_tokens_details = defined({ cached_tokens: cacheRead, cache_write_tokens: cacheWrite });
   }
-  if (items.length > 0 && cost !== undefined)
-    usage.cost_usd = String(cost);
-  const size = record2(context);
-  if (count2(size.tokens) !== undefined)
-    usage[CONTEXT_FIELD] = defined({ tokens: size.tokens, budget: size.budget });
+  if (cost !== undefined)
+    usage.cost_usd = String(Math.max(0, cost - costBefore));
+  const size2 = record2(context);
+  if (count3(size2.tokens) !== undefined)
+    usage[CONTEXT_FIELD] = defined({ tokens: size2.tokens, budget: size2.budget });
   const recorded = recordedUsage(usage);
-  const prompt = count2(recorded.prompt_tokens);
-  const completion = count2(recorded.completion_tokens);
+  const prompt = count3(recorded.prompt_tokens);
+  const completion = count3(recorded.completion_tokens);
   const details = record2(recorded.prompt_tokens_details);
-  const read = count2(details.cached_tokens) ?? 0;
-  const write = count2(details.cache_write_tokens) ?? 0;
+  const read = count3(details.cached_tokens) ?? 0;
+  const write = count3(details.cache_write_tokens) ?? 0;
   return {
     inputTokens: {
       total: prompt,
@@ -548,6 +762,7 @@ function turnUsage(snapshot, context) {
   };
 }
 var STOP = { unified: "stop", raw: "success" };
+var TOOL_CALLS = { unified: "tool-calls", raw: "tool-calls" };
 function errorText(error) {
   const value = record2(error);
   const message = text(value.message) ?? "The Amplifier turn failed.";
@@ -561,14 +776,34 @@ class TurnMapper {
   textID;
   reasoningID;
   open = new Map;
+  proxied = new Map;
+  offered;
+  sink;
+  sessionID;
   snapshot;
+  known;
   context;
+  reported = 0;
+  stepProxied = 0;
   ended = false;
-  constructor(modelID) {
+  metadata;
+  constructor(modelID, options = {}) {
     this.modelID = modelID;
+    this.offered = options.sink ? options.offered ?? new Set : new Set;
+    this.sink = options.sink;
+    this.sessionID = options.sessionID;
   }
   get done() {
     return this.ended;
+  }
+  get session() {
+    return this.sessionID;
+  }
+  stepStart() {
+    return [{ type: "stream-start", warnings: [] }, ...this.metadata ? [this.metadata] : []];
+  }
+  emptyFinish() {
+    return this.finish(STOP);
   }
   id(kind) {
     return `${kind}-${this.next++}`;
@@ -596,10 +831,85 @@ class TurnMapper {
       isError: true
     }));
     this.open.clear();
+    for (const callID of this.proxied.keys())
+      this.sink?.reject(callID, new Error(message));
+    this.proxied.clear();
     return parts;
   }
-  finish(raw) {
-    return { type: "finish", finishReason: { ...STOP, raw }, usage: turnUsage(this.snapshot, this.context) };
+  finish(reason, raw = reason.raw) {
+    const snapshot = this.ended ? this.snapshot : this.known;
+    const usage = turnUsage(snapshot, this.context, this.reported);
+    this.reported = Math.max(this.reported, snapshotCost(snapshot) ?? this.reported);
+    return { type: "finish", finishReason: { ...reason, raw }, usage };
+  }
+  boundary() {
+    if (this.stepProxied === 0 || this.open.size > 0)
+      return [];
+    this.stepProxied = 0;
+    return [...this.closeText(), ...this.closeReasoning(), this.finish(TOOL_CALLS)];
+  }
+  toolCall(call) {
+    const proxied = this.sink ? proxiedCall(call, this.offered) : undefined;
+    const { name, input } = proxied ?? toolDisplay(call);
+    const json = JSON.stringify(input);
+    const id = call.call_id;
+    const parts = [...this.closeText(), ...this.closeReasoning()];
+    if (proxied) {
+      this.sink?.register(id, this.sessionID);
+      this.proxied.set(id, name);
+      this.stepProxied++;
+      return [
+        ...parts,
+        { type: "tool-input-start", id, toolName: name },
+        { type: "tool-input-delta", id, delta: json },
+        { type: "tool-input-end", id },
+        { type: "tool-call", toolCallId: id, toolName: name, input: json }
+      ];
+    }
+    this.open.set(id, name);
+    return [
+      ...parts,
+      { type: "tool-input-start", id, toolName: name, providerExecuted: true },
+      { type: "tool-input-delta", id, delta: json },
+      { type: "tool-input-end", id },
+      { type: "tool-call", toolCallId: id, toolName: name, input: json, providerExecuted: true }
+    ];
+  }
+  toolResult(payload) {
+    const resolution = record2(payload.resolution);
+    const id = text(resolution.call_id);
+    if (!id)
+      return [];
+    const content = typeof resolution.content === "string" ? resolution.content : "";
+    const outcome = text(resolution.outcome) ?? "unknown";
+    const reason = outcome === "completed" ? undefined : resolution.error ? errorText(resolution.error) : undefined;
+    const failure = reason ?? `The tool call ended ${outcome}.`;
+    const proxied = this.proxied.get(id);
+    if (proxied) {
+      this.proxied.delete(id);
+      if (outcome === "completed")
+        this.sink?.resolve(id, proxyResult(proxied, content, fileChanges(payload)));
+      else
+        this.sink?.reject(id, new Error(content ? `${failure}
+${content}` : failure));
+      return [];
+    }
+    const name = this.open.get(id);
+    if (!name)
+      return [];
+    this.open.delete(id);
+    if (outcome === "completed")
+      return [{ type: "tool-result", toolCallId: id, toolName: name, result: content }];
+    return [
+      {
+        type: "tool-result",
+        toolCallId: id,
+        toolName: name,
+        result: content ? `${failure}
+${content}` : failure,
+        isError: true
+      }
+    ];
   }
   map(envelope) {
     if (this.ended)
@@ -609,10 +919,8 @@ class TurnMapper {
       case "turn_started": {
         const actual = record2(payload.primary_actual);
         const model = text(actual.provider) && text(actual.model) ? `${actual.provider}/${actual.model}` : this.modelID;
-        return [
-          { type: "stream-start", warnings: [] },
-          { type: "response-metadata", id: envelope.turn_id, modelId: model }
-        ];
+        this.metadata = { type: "response-metadata", id: envelope.turn_id, modelId: model };
+        return [{ type: "stream-start", warnings: [] }, this.metadata];
       }
       case "output_delta": {
         const content = Array.isArray(payload.content) ? payload.content : [];
@@ -620,7 +928,7 @@ class TurnMapper {
         const joined = delta.join("");
         if (!joined)
           return [];
-        const parts = this.closeReasoning();
+        const parts = [...this.boundary(), ...this.closeReasoning()];
         if (!this.textID) {
           this.textID = this.id("text");
           parts.push({ type: "text-start", id: this.textID });
@@ -632,7 +940,7 @@ class TurnMapper {
         const delta = text(payload.text);
         if (!delta)
           return [];
-        const parts = this.closeText();
+        const parts = [...this.boundary(), ...this.closeText()];
         if (!this.reasoningID) {
           this.reasoningID = this.id("reasoning");
           parts.push({ type: "reasoning-start", id: this.reasoningID });
@@ -648,6 +956,7 @@ class TurnMapper {
           return [];
         const id = this.id("reasoning");
         return [
+          ...this.boundary(),
           ...this.closeText(),
           { type: "reasoning-start", id },
           { type: "reasoning-delta", id, delta: block },
@@ -656,51 +965,23 @@ class TurnMapper {
       }
       case "tool_call": {
         const call = record2(payload.call);
-        if (!text(call.call_id) || !text(call.name) || this.open.has(call.call_id))
+        if (!text(call.call_id) || !text(call.name))
           return [];
-        const { name, input } = toolDisplay(call);
-        const json = JSON.stringify(input);
-        this.open.set(call.call_id, name);
-        const id = call.call_id;
-        return [
-          ...this.closeText(),
-          ...this.closeReasoning(),
-          { type: "tool-input-start", id, toolName: name, providerExecuted: true },
-          { type: "tool-input-delta", id, delta: json },
-          { type: "tool-input-end", id },
-          { type: "tool-call", toolCallId: id, toolName: name, input: json, providerExecuted: true }
-        ];
-      }
-      case "tool_result": {
-        const resolution = record2(payload.resolution);
-        const id = text(resolution.call_id);
-        const name = id ? this.open.get(id) : undefined;
-        if (!id || !name)
+        if (this.open.has(call.call_id) || this.proxied.has(call.call_id))
           return [];
-        this.open.delete(id);
-        const content = typeof resolution.content === "string" ? resolution.content : "";
-        const outcome = text(resolution.outcome) ?? "unknown";
-        if (outcome === "completed")
-          return [{ type: "tool-result", toolCallId: id, toolName: name, result: content }];
-        const reason = resolution.error ? errorText(resolution.error) : `The tool call ended ${outcome}.`;
-        return [
-          {
-            type: "tool-result",
-            toolCallId: id,
-            toolName: name,
-            result: content ? `${reason}
-${content}` : reason,
-            isError: true
-          }
-        ];
+        return this.toolCall(call);
       }
+      case "tool_result":
+        return this.toolResult(payload);
       case "usage":
         this.snapshot = payload.snapshot;
+        if (snapshotKnown(payload.snapshot))
+          this.known = payload.snapshot;
         return [];
       case "progress": {
-        const size = record2(record2(payload.data).context_size);
-        if (Object.keys(size).length > 0)
-          this.context = size;
+        const size2 = record2(record2(payload.data).context_size);
+        if (Object.keys(size2).length > 0)
+          this.context = size2;
         return [];
       }
       case "terminal": {
@@ -713,9 +994,10 @@ ${content}` : reason,
           ...this.settleOpen(`The Amplifier turn ended ${state}.`)
         ];
         this.ended = true;
+        this.stepProxied = 0;
         if (state === "success" || state === "rejected")
-          return [...parts, this.finish(state)];
-        return [...parts, this.finish(state), { type: "error", error: new Error(errorText(payload.error)) }];
+          return [...parts, this.finish(STOP, state)];
+        return [...parts, this.finish(STOP, state), { type: "error", error: new Error(errorText(payload.error)) }];
       }
       default:
         return [];
@@ -725,6 +1007,7 @@ ${content}` : reason,
     if (this.ended)
       return [];
     this.ended = true;
+    this.stepProxied = 0;
     const message = error instanceof Error ? error.message : String(error);
     return [
       ...this.closeText(),
@@ -737,9 +1020,12 @@ ${content}` : reason,
 
 // src/language.ts
 var PROVIDER = "amplifier";
-var running = new Map;
+var turns = new Map;
+var lastFinish = new Map;
 function interrupt(sessionID) {
-  running.get(sessionID)?.abort(new Error("The opencode session was interrupted."));
+  const error = new Error("The opencode session was interrupted.");
+  turns.get(sessionID)?.abort(error);
+  rejectAll(error, sessionID);
 }
 function header(headers, name) {
   const wanted = name.toLowerCase();
@@ -798,10 +1084,28 @@ class AmplifierLanguageModel {
     return { content, finishReason: finish.finishReason, usage: finish.usage, warnings: [] };
   }
   async doStream(options) {
+    const sessionID = header(options.headers, "x-opencode-session-id");
+    const continues = options.prompt.at(-1)?.role === "tool";
+    let turn = sessionID ? turns.get(sessionID) : undefined;
+    if (turn && !continues) {
+      turn.abort(new Error("A newer turn started in this opencode session."));
+      turn = undefined;
+    }
+    if (!turn && continues) {
+      const finish = (sessionID ? lastFinish.get(sessionID) : undefined) ?? EMPTY_FINISH;
+      return { stream: finished(finish), request: { body: {} } };
+    }
+    if (!turn) {
+      turn = await this.start(options, sessionID);
+      if (sessionID)
+        turns.set(sessionID, turn);
+    }
+    return { stream: turn.step(options.abortSignal), request: { body: turn.body } };
+  }
+  async start(options, sessionID) {
     const face = this.context.face();
     if (!face)
       throw new Error("The Amplifier face is not running. Run: amplifier-opencode doctor");
-    const sessionID = header(options.headers, "x-opencode-session-id");
     const effort = options.providerOptions?.[PROVIDER]?.reasoningEffort;
     const body = {
       model: this.modelId,
@@ -809,39 +1113,27 @@ class AmplifierLanguageModel {
       ...typeof effort === "string" ? { reasoning_effort: effort } : {},
       ...this.context.asks ? { approvals: "ask" } : {}
     };
+    if (sessionID)
+      forget(sessionID);
     const abort = new AbortController;
-    const forward = () => abort.abort(options.abortSignal?.reason);
-    options.abortSignal?.addEventListener("abort", forward, { once: true });
-    if (sessionID) {
-      running.get(sessionID)?.abort(new Error("A newer turn started in this opencode session."));
-      running.set(sessionID, abort);
-    }
-    const release = () => {
-      options.abortSignal?.removeEventListener("abort", forward);
-      if (sessionID && running.get(sessionID) === abort)
-        running.delete(sessionID);
-    };
-    let response;
-    try {
-      response = await fetch(`${face.baseURL}/amplifier/turns`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${face.token}`,
-          "Content-Type": "application/json",
-          ...sessionID ? { "Amplifier-Session-Id": sessionHeader(sessionID) } : {}
-        },
-        body: JSON.stringify(body),
-        signal: abort.signal
-      });
-    } catch (error) {
-      release();
-      throw error;
-    }
-    if (!response.ok || !response.body) {
-      release();
+    const response = await fetch(`${face.baseURL}/amplifier/turns`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${face.token}`,
+        "Content-Type": "application/json",
+        ...sessionID ? { "Amplifier-Session-Id": sessionHeader(sessionID) } : {}
+      },
+      body: JSON.stringify(body),
+      signal: abort.signal
+    });
+    if (!response.ok || !response.body)
       throw await failure(response);
-    }
-    const mapper = new TurnMapper(this.modelId);
+    const offered = new Set((options.tools ?? []).map((tool) => tool.name).filter((name) => PROXY_TOOLS.includes(name)));
+    const mapper = new TurnMapper(this.modelId, sessionID ? { offered, sink: exports_proxy, sessionID } : {});
+    const turn = new Turn(body, mapper, abort, () => {
+      if (sessionID && turns.get(sessionID) === turn)
+        turns.delete(sessionID);
+    });
     const calls = new Map;
     const answer = (requestID, decision, reason) => {
       if (abort.signal.aborted)
@@ -878,50 +1170,271 @@ class AmplifierLanguageModel {
       }
     };
     const reader = response.body.pipeThrough(envelopes()).getReader();
-    const read = async () => {
-      if (mapper.done)
-        return [];
-      let result;
-      try {
-        result = await reader.read();
-      } catch (error) {
-        return mapper.fail(abort.signal.aborted ? new Error("The Amplifier turn was cancelled.") : error);
-      }
-      if (result.done)
-        return mapper.fail(new Error("The Amplifier face ended the turn without a result."));
-      const envelope = result.value;
-      if (envelope.type === "tool_call") {
-        const call = envelope.payload.call;
-        if (call?.call_id)
-          calls.set(call.call_id, call);
-      } else if (envelope.type === "approval_request" && this.context.asks) {
-        approve(envelope.payload.request ?? {});
-      }
-      return mapper.map(envelope);
-    };
-    const stream = new ReadableStream({
-      async pull(controller) {
-        for (;; ) {
-          const parts = await read();
-          for (const part of parts)
-            controller.enqueue(part);
-          if (mapper.done) {
-            release();
-            controller.close();
-            return;
-          }
-          if (parts.length > 0)
-            return;
+    (async () => {
+      while (!mapper.done) {
+        let result;
+        try {
+          result = await reader.read();
+        } catch (error) {
+          turn.push(mapper.fail(abort.signal.aborted ? new Error("The Amplifier turn was cancelled.") : error));
+          break;
         }
-      },
-      cancel(reason) {
-        release();
-        abort.abort(reason);
+        if (result.done) {
+          turn.push(mapper.fail(new Error("The Amplifier face ended the turn without a result.")));
+          break;
+        }
+        const envelope = result.value;
+        if (envelope.type === "tool_call") {
+          const call = envelope.payload.call;
+          if (call?.call_id)
+            calls.set(call.call_id, call);
+        } else if (envelope.type === "approval_request" && this.context.asks) {
+          approve(envelope.payload.request ?? {});
+        }
+        if (sessionID)
+          this.context.observe?.(sessionID, envelope);
+        turn.push(mapper.map(envelope));
       }
-    });
-    return { stream, request: { body } };
+      turn.end();
+      reader.releaseLock();
+    })();
+    return turn;
   }
 }
+var EMPTY_FINISH = {
+  type: "finish",
+  finishReason: { unified: "stop", raw: "success" },
+  usage: {
+    inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: undefined, text: undefined, reasoning: undefined }
+  }
+};
+function finished(finish) {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue({ type: "stream-start", warnings: [] });
+      controller.enqueue(finish);
+      controller.close();
+    }
+  });
+}
+
+class Turn {
+  body;
+  mapper;
+  controller;
+  release;
+  parts = [];
+  wake;
+  ended = false;
+  steps = 0;
+  constructor(body, mapper, controller, release) {
+    this.body = body;
+    this.mapper = mapper;
+    this.controller = controller;
+    this.release = release;
+  }
+  push(parts) {
+    if (parts.length === 0)
+      return;
+    this.parts.push(...parts);
+    this.wake?.();
+  }
+  end() {
+    this.ended = true;
+    this.wake?.();
+  }
+  abort(reason) {
+    this.controller.abort(reason);
+    this.release();
+  }
+  async next() {
+    while (this.parts.length === 0) {
+      if (this.ended)
+        return;
+      await new Promise((wake) => {
+        this.wake = wake;
+      });
+      this.wake = undefined;
+    }
+    return this.parts.shift();
+  }
+  step(signal) {
+    const first = this.steps++ === 0;
+    const forward = () => this.abort(signal?.reason);
+    signal?.addEventListener("abort", forward, { once: true });
+    const done = () => signal?.removeEventListener("abort", forward);
+    let finished2 = false;
+    let started = first;
+    return new ReadableStream({
+      pull: async (controller) => {
+        if (!started) {
+          started = true;
+          for (const part2 of this.mapper.stepStart())
+            controller.enqueue(part2);
+          return;
+        }
+        const part = await this.next();
+        if (!part) {
+          if (!finished2)
+            controller.enqueue(this.mapper.emptyFinish());
+          done();
+          this.release();
+          controller.close();
+          return;
+        }
+        controller.enqueue(part);
+        if (part.type !== "finish")
+          return;
+        finished2 = true;
+        this.remember(part);
+        if (part.finishReason.unified === "tool-calls") {
+          done();
+          controller.close();
+        }
+      },
+      cancel: (reason) => {
+        done();
+        this.abort(reason);
+      }
+    });
+  }
+  remember(part) {
+    const session = this.mapper.session;
+    if (!session)
+      return;
+    const inputTokens = { ...part.usage.inputTokens, cacheWrite: 0 };
+    lastFinish.set(session, {
+      ...part,
+      finishReason: { unified: "stop", raw: "success" },
+      usage: { ...part.usage, inputTokens }
+    });
+  }
+}
+
+// src/usage-book.ts
+function record3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+}
+function count4(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+function usd2(value) {
+  const amount = record3(value).USD;
+  return typeof amount === "string" && amount.trim() !== "" ? count4(Number(amount)) : null;
+}
+function usageRows(snapshot) {
+  const entries = record3(snapshot).entries;
+  return (Array.isArray(entries) ? entries : []).map((item) => {
+    const entry = record3(item);
+    return {
+      provider: typeof entry.provider === "string" ? entry.provider : "unknown",
+      model: typeof entry.model === "string" ? entry.model : "unknown",
+      tokensIn: count4(entry.tokens_in),
+      tokensOut: count4(entry.tokens_out),
+      cacheRead: count4(entry.cache_read_tokens),
+      cacheWrite: count4(entry.cache_write_tokens),
+      costUSD: usd2(entry.cost)
+    };
+  });
+}
+var plus = (a, b) => a === null || b === null ? null : a + b;
+function addRows(a, b) {
+  const rows = new Map;
+  for (const row of [...a, ...b]) {
+    const key = `${row.provider}/${row.model}`;
+    const seen = rows.get(key);
+    rows.set(key, seen ? {
+      ...seen,
+      tokensIn: plus(seen.tokensIn, row.tokensIn),
+      tokensOut: plus(seen.tokensOut, row.tokensOut),
+      cacheRead: plus(seen.cacheRead, row.cacheRead),
+      cacheWrite: plus(seen.cacheWrite, row.cacheWrite),
+      costUSD: plus(seen.costUSD, row.costUSD)
+    } : row);
+  }
+  return [...rows.values()];
+}
+
+class UsageBook {
+  books = new Map;
+  get(sessionID) {
+    const book = this.books.get(sessionID);
+    if (!book)
+      return { sessionID, turn: [], session: [], compactions: 0 };
+    return {
+      sessionID,
+      turn: book.turn,
+      session: book.running ? addRows(book.done, book.turn) : book.done,
+      compactions: book.compactions
+    };
+  }
+  observe(sessionID, envelope) {
+    let book = this.books.get(sessionID);
+    if (!book) {
+      book = { done: [], turn: [], running: false, compactions: 0 };
+      this.books.set(sessionID, book);
+    }
+    const payload = envelope.payload;
+    switch (envelope.type) {
+      case "turn_started":
+        book.turn = [];
+        book.running = true;
+        return this.get(sessionID);
+      case "usage":
+        book.turn = usageRows(payload.snapshot);
+        return this.get(sessionID);
+      case "progress":
+        if (record3(record3(payload.data).context).compacted !== true)
+          return;
+        book.compactions++;
+        return this.get(sessionID);
+      case "terminal":
+        if (payload.usage)
+          book.turn = usageRows(payload.usage);
+        if (book.running)
+          book.done = addRows(book.done, book.turn);
+        book.running = false;
+        return this.get(sessionID);
+      default:
+        return;
+    }
+  }
+}
+var NUMBER = { type: ["number", "null"] };
+var ROW = {
+  type: "object",
+  properties: {
+    provider: { type: "string" },
+    model: { type: "string" },
+    tokensIn: NUMBER,
+    tokensOut: NUMBER,
+    cacheRead: NUMBER,
+    cacheWrite: NUMBER,
+    costUSD: NUMBER
+  },
+  required: ["provider", "model", "tokensIn", "tokensOut", "cacheRead", "cacheWrite", "costUSD"]
+};
+var USAGE = {
+  type: "object",
+  properties: {
+    sessionID: { type: "string" },
+    turn: { type: "array", items: ROW },
+    session: { type: "array", items: ROW },
+    compactions: { type: "number" }
+  },
+  required: ["sessionID", "turn", "session", "compactions"]
+};
+var USAGE_RPC = {
+  id: "amplifier",
+  methods: {
+    usage: {
+      input: { type: "object", properties: { sessionID: { type: "string" } }, required: ["sessionID"] },
+      output: USAGE
+    }
+  },
+  events: { usage: { schema: USAGE } }
+};
 
 // src/index.ts
 var AGENT = "amplifier";
@@ -958,7 +1471,7 @@ var plugin = {
     if (!(face instanceof Error))
       show(live, face, options);
     try {
-      await register(ctx, live, options, stale);
+      await register2(ctx, live, options, stale);
     } catch (error) {
       live.face?.stop();
       throw error;
@@ -1059,9 +1572,9 @@ var PERMISSIONS = [
   { action: "read", resource: "*.env", effect: "ask" },
   { action: "read", resource: "*.env.*", effect: "ask" },
   { action: "read", resource: "*.env.example", effect: "allow" },
-  ...["glob", "grep", "websearch", "question", "todowrite", "subagent", "skill", "execute", "opencode_*"].map((action) => ({ action, resource: "*", effect: "deny" }))
+  ...["websearch", "question", "todowrite", "subagent", "skill", "execute", "opencode_*"].map((action) => ({ action, resource: "*", effect: "deny" }))
 ];
-async function register(ctx, live, options, stale) {
+async function register2(ctx, live, options, stale) {
   const { defaultModel, setDefaultAgent } = options;
   await ctx.provider.transform((providers) => {
     const face = live.face;
@@ -1100,6 +1613,7 @@ async function register(ctx, live, options, stale) {
       agent.mode = "primary";
       agent.hidden = false;
       agent.model = { providerID: PROVIDER, id: defaultModelKey(live.entries, defaultModel) };
+      agent.steps = undefined;
       const rules = agent.permissions;
       const defaults = rules.findIndex((rule, index) => JSON.stringify(rule) !== JSON.stringify(PERMISSIONS[index]));
       agent.permissions = [...PERMISSIONS, ...rules.slice(defaults < 0 ? rules.length : defaults)];
@@ -1111,15 +1625,43 @@ async function register(ctx, live, options, stale) {
     event.sdk ??= {};
   }, SCOPE);
   const asks = options.approvals === "opencode";
+  const book = new UsageBook;
+  let usageEvents;
+  try {
+    const registration = await ctx.rpc.register(USAGE_RPC, {
+      usage: async (input) => book.get(input.sessionID)
+    });
+    usageEvents = registration.events;
+  } catch (error) {
+    log(`could not offer Amplifier usage to the TUI: ${error.message}`);
+  }
+  await ctx.tool.transform((tools) => {
+    for (const id of PROXY_TOOLS) {
+      tools.update(id, (tool) => {
+        const original = tool.execute;
+        tool.execute = async (input, context) => {
+          if (!registered(context.id))
+            return original(input, context);
+          return await wait(context.id, context.signal);
+        };
+      });
+    }
+  });
   await ctx.aisdk.hook("language", (event) => {
     event.language = new AmplifierLanguageModel(String(event.model.modelID ?? event.model.id), {
       face: () => live.face,
       asks,
-      assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID })
+      assert: (input) => ctx.permission.assert({ ...input, sessionID: input.sessionID }),
+      observe: (sessionID, envelope) => {
+        const usage = book.observe(sessionID, envelope);
+        if (usage)
+          usageEvents?.emit("usage", usage).catch(() => {});
+      }
     });
   }, SCOPE);
   await ctx.session.hook("context", (event) => {
-    event.tools = {};
+    const tools = event.tools;
+    event.tools = Object.fromEntries(PROXY_TOOLS.map((name) => [name, tools[name] ?? { description: name, input: { type: "object" } }]));
   }, SCOPE);
   await ctx.session.hook("title", (event) => {
     const user = event.messages.find((message) => message.role === "user");

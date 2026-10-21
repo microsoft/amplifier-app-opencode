@@ -6,8 +6,9 @@ from digital_twin_universe import lib
 from digital_twin_universe.schemas import ExecResult
 from support import CONFIG, HOME, REPOSITORY, STATE, Twin
 
-PLUGIN = f"{CONFIG}/plugins/amplifier.js"
-BUNDLE = REPOSITORY / "src" / "amplifier_app_opencode" / "plugin_bundle" / "amplifier.js"
+PLUGIN = f"{CONFIG}/plugins/amplifier"
+BUNDLE = REPOSITORY / "src" / "amplifier_app_opencode" / "plugin_bundle" / "amplifier"
+SINGLE_FILE = f"{CONFIG}/plugins/amplifier.js"
 
 PROVIDER_BLOCK = {
     "npm": "@ai-sdk/openai-compatible",
@@ -40,8 +41,9 @@ def test_install_from_the_readme_installs_the_plugin_that_was_built(
     assert f"Installed the plugin: {PLUGIN}" in installed.stdout
     assert "Warning" not in installed.stdout
 
-    lib.pull_files(opencode.id, PLUGIN, tmp_path / "amplifier.js")
-    assert (tmp_path / "amplifier.js").read_bytes() == BUNDLE.read_bytes()
+    for name in ("server.js", "tui.tsx"):
+        lib.pull_files(opencode.id, f"{PLUGIN}/{name}", tmp_path / name)
+        assert (tmp_path / name).read_bytes() == (BUNDLE / name).read_bytes()
 
     options = json.loads(opencode.read(f"{CONFIG}/amplifier.json"))
     assert options["setDefaultAgent"] is True
@@ -74,6 +76,22 @@ def test_the_amplifier_agent_runs_the_default_model(opencode: Twin) -> None:
     amplifier = next(agent for agent in agents if agent["id"] == "amplifier")
 
     assert amplifier["model"] == {"providerID": "amplifier", "id": "default"}
+
+
+def test_install_replaces_the_single_file_plugin(opencode: Twin) -> None:
+    opencode.check(f"printf '// amplifier-opencode-plugin 0.23.0\\n' > {shlex.quote(SINGLE_FILE)}")
+    try:
+        doctor = opencode.run("amplifier-opencode doctor", workdir=HOME)
+        assert doctor.exit_code == 1
+        assert f"An earlier plugin file remains at {SINGLE_FILE}" in doctor.stdout
+
+        installed = opencode.run("amplifier-opencode install --yes", workdir=HOME)
+        assert installed.exit_code == 0, installed.stderr
+        assert f"Removed the plugin's earlier location: {SINGLE_FILE}" in installed.stdout
+        assert not opencode.exists(SINGLE_FILE)
+        assert opencode.exists(f"{PLUGIN}/server.js")
+    finally:
+        opencode.check(f"rm -f {shlex.quote(SINGLE_FILE)}")
 
 
 def test_install_removes_what_0_4_wrote_and_keeps_the_users_files(opencode: Twin) -> None:

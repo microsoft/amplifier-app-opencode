@@ -19,7 +19,11 @@ import urllib.request
 
 from amplifier_app_opencode import cleanup
 
-PLUGIN_NAME = "amplifier.js"
+# The plugin is a directory opencode loads: a server part and a TUI part.
+PLUGIN_NAME = "amplifier"
+PLUGIN_FILES = ("server.js", "tui.tsx")
+# Where earlier releases installed the plugin as one file; opencode would load it beside the directory.
+SINGLE_FILE_NAME = "amplifier.js"
 OPTIONS_NAME = "amplifier.json"
 COMMAND = "amplifier-opencode"
 DEFAULT_OPTIONS: dict[str, Any] = {
@@ -50,14 +54,20 @@ def config_dir() -> Path:
     return Path(base) / "opencode"
 
 
+def plugins_dir(project: Path | None) -> Path:
+    return config_dir() / "plugins" if project is None else project / ".opencode" / "plugins"
+
+
 def plugin_path(project: Path | None) -> Path:
-    if project is None:
-        return config_dir() / "plugins" / PLUGIN_NAME
-    return project / ".opencode" / "plugins" / PLUGIN_NAME
+    return plugins_dir(project) / PLUGIN_NAME
 
 
-def bundled_plugin() -> bytes:
-    return resources.files("amplifier_app_opencode").joinpath("plugin_bundle", PLUGIN_NAME).read_bytes()
+def single_file_path(project: Path | None) -> Path:
+    return plugins_dir(project) / SINGLE_FILE_NAME
+
+
+def bundled_plugin(name: str) -> bytes:
+    return resources.files("amplifier_app_opencode").joinpath("plugin_bundle", PLUGIN_NAME, name).read_bytes()
 
 
 def plugin_version(path: Path) -> str | None:
@@ -149,9 +159,16 @@ def install(project: Path | None, assume_yes: bool) -> int:
         print(f"Warning: {problem}")
 
     target = plugin_path(project)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(bundled_plugin())
+    if target.is_file() or target.is_symlink():
+        target.unlink()
+    target.mkdir(parents=True, exist_ok=True)
+    for name in PLUGIN_FILES:
+        (target / name).write_bytes(bundled_plugin(name))
     print(f"Installed the plugin: {target}")
+    single = single_file_path(project)
+    if single.exists():
+        single.unlink()
+        print(f"Removed the plugin's earlier location: {single}")
 
     options = config_dir() / OPTIONS_NAME
     if not options.exists():
@@ -170,11 +187,18 @@ def uninstall(project: Path | None) -> int:
     if project is not None:
         project = project.expanduser().resolve()
     target = plugin_path(project)
-    if target.exists():
+    removed = False
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target)
+        removed = True
+    elif target.exists() or target.is_symlink():
         target.unlink()
-        print(f"Removed the plugin: {target}")
-    else:
-        print(f"No plugin at {target}")
+        removed = True
+    single = single_file_path(project)
+    if single.exists():
+        single.unlink()
+        removed = True
+    print(f"Removed the plugin: {target}" if removed else f"No plugin at {target}")
     options = config_dir() / OPTIONS_NAME
     if options.exists():
         print(f"Kept the options: {options}")
@@ -253,10 +277,14 @@ def doctor() -> int:
     plugins = [plugin_path(None), plugin_path(Path.cwd())]
     present = [path for path in plugins if path.exists()]
     for path in present:
-        embedded = plugin_version(path)
+        versions = {plugin_version(path / name) for name in PLUGIN_FILES}
+        embedded = versions.pop() if len(versions) == 1 else None
         print(f"plugin: {path} ({embedded or 'unknown version'})")
         if embedded != own:
             problems.append(f"The plugin at {path} is version {embedded}, not {own}. Run: amplifier-opencode install")
+    for single in (single_file_path(None), single_file_path(Path.cwd())):
+        if single.exists():
+            problems.append(f"An earlier plugin file remains at {single}. Run: amplifier-opencode install")
     if not present:
         print("plugin: not installed")
         problems.append("The plugin is not installed. Run: amplifier-opencode install")
