@@ -11,14 +11,13 @@ OPENAI_API_KEY are required; AMPLIFIER_AGENT_DIR names the amplifier-agent check
 """
 
 from collections.abc import Iterator
-import json
 import os
 import shlex
 
 from digital_twin_universe import lib
 from digital_twin_universe.schemas import DigitalTwinUniverseError, ExecResult
 import pytest
-from support import CONFIG, DEFAULT_MODEL, HOME, LAUNCH_TIMEOUT, PROFILE, Twin, current_branch, wait_for
+from support import HOME, LAUNCH_TIMEOUT, PROFILE, Twin, current_branch, wait_for
 
 LOGIN = "opencode-login"
 
@@ -68,9 +67,6 @@ def connected(twin: Twin, installed: ExecResult) -> str:
     prompt. The key goes from the twin's secret file to tmux's paste buffer, never onto a command line. Returns the
     screen after the login."""
     assert installed.exit_code == 0, f"install failed\n{installed.stdout}\n{installed.stderr}"
-    options = json.loads(twin.read(f"{CONFIG}/amplifier.json"))
-    options["defaultModel"] = DEFAULT_MODEL
-    twin.check(f"printf '%s\\n' {shlex.quote(json.dumps(options, indent=2))} > {CONFIG}/amplifier.json")
 
     def screen() -> str:
         return twin.run(f"tmux capture-pane -p -t {LOGIN}").stdout
@@ -94,7 +90,8 @@ def connected(twin: Twin, installed: ExecResult) -> str:
 
 @pytest.fixture(scope="session")
 def opencode(twin: Twin, connected: str) -> Twin:
-    """The twin with amplifier-opencode installed, OpenAI connected in opencode, and `defaultModel` set."""
+    """The twin with amplifier-opencode installed and OpenAI connected in opencode; amplifier.json sets no
+    `defaultModel`, so Amplifier picks its default from the OpenAI connection."""
     return twin
 
 

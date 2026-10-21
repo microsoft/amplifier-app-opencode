@@ -4,7 +4,7 @@ import shlex
 
 from digital_twin_universe import lib
 from digital_twin_universe.schemas import ExecResult
-from support import CONFIG, DEFAULT_MODEL, HOME, REPOSITORY, STATE, Twin
+from support import CONFIG, HOME, REPOSITORY, STATE, Twin
 
 PLUGIN = f"{CONFIG}/plugins/amplifier.js"
 BUNDLE = REPOSITORY / "src" / "amplifier_app_opencode" / "plugin_bundle" / "amplifier.js"
@@ -73,7 +73,7 @@ def test_the_amplifier_agent_runs_the_default_model(opencode: Twin) -> None:
     agents = json.loads(opencode.check("opencode debug agents", workdir=HOME))
     amplifier = next(agent for agent in agents if agent["id"] == "amplifier")
 
-    assert amplifier["model"] == {"providerID": "amplifier", "id": DEFAULT_MODEL.replace("/", "-")}
+    assert amplifier["model"] == {"providerID": "amplifier", "id": "default"}
 
 
 def test_install_removes_what_0_4_wrote_and_keeps_the_users_files(opencode: Twin) -> None:

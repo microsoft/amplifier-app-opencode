@@ -19,8 +19,9 @@ PROFILE = REPOSITORY / ".agents" / "digital-twin-universe" / "opencode-amplifier
 HOME = "/home/user"
 CONFIG = f"{HOME}/.config/opencode"
 STATE = f"{HOME}/.local/state/amplifier-opencode"
+# The model Amplifier picks by default when OpenAI is the only provider with credentials.
 DEFAULT_MODEL = "openai/gpt-6.1-sol"
-# The opencode model key for DEFAULT_MODEL with its medium reasoning variant; every turn runs on it.
+# The opencode model key for DEFAULT_MODEL with its medium reasoning variant; turns run on it unless they name a model.
 MODEL = "amplifier/openai-gpt-6.1-sol#medium"
 LAUNCH_TIMEOUT = 900
 TURN_TIMEOUT = 300
