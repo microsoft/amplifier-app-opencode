@@ -9,9 +9,9 @@ import {
   modelEntries,
   sessionHeader,
   titleFrom,
-  withoutReasoning,
 } from "./mapping.ts"
 import { type Options, readOptions } from "./options.ts"
+import { CARRIER_COST, usageRewriter } from "./usage.ts"
 
 declare const AMPLIFIER_OPENCODE_VERSION: string
 
@@ -192,9 +192,10 @@ async function register(
       providers.models.update(PROVIDER, entry.key, (model) => {
         model.modelID = entry.modelID as never
         model.name = entry.name
-        // An unknown window keeps opencode from compacting on its own: the face reports usage summed over every
-        // model call of a turn, so it overstates the context, and Amplifier compacts the session itself.
-        model.limit = { context: 0, output: 0 }
+        // The face takes no output limit. The usage rewrite makes the last message's tokens the context size and
+        // carries the turn's cost in cache writes, which only this cost prices.
+        model.limit = { context: entry.contextWindow ?? 0, output: 0 }
+        model.cost = CARRIER_COST as never
         model.variants = entry.efforts.map((effort) => ({
           id: effort as never,
           settings: { reasoningEffort: effort },
@@ -242,17 +243,16 @@ async function register(
   )
 
   await ctx.session.hook(
-    "http.request",
-    async (event) => {
-      const text = await event.request.clone().text()
-      if (!text.includes('"reasoning_content"')) return
-      const headers = new Headers(event.request.headers)
+    "http.response",
+    (event) => {
+      const { response } = event
+      if (!response.body || !response.headers.get("content-type")?.startsWith("text/event-stream")) return
+      const headers = new Headers(response.headers)
       headers.delete("content-length")
-      event.request = new Request(event.request.url, {
-        method: event.request.method,
+      event.response = new Response(response.body.pipeThrough(usageRewriter()), {
+        status: response.status,
+        statusText: response.statusText,
         headers,
-        body: JSON.stringify(withoutReasoning(JSON.parse(text))),
-        signal: event.request.signal,
       })
     },
     SCOPE,

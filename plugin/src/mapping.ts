@@ -62,16 +62,3 @@ export function titleFrom(text: string): string | undefined {
   if (!line) return undefined
   return line.length <= 60 ? line : `${line.slice(0, 57).trimEnd()}...`
 }
-
-/** The chat-completions body without the assistant `reasoning_content` the face does not accept. */
-export function withoutReasoning(body: unknown): unknown {
-  if (typeof body !== "object" || body === null || !("messages" in body) || !Array.isArray(body.messages)) return body
-  return {
-    ...body,
-    messages: body.messages.map((message: unknown) => {
-      if (typeof message !== "object" || message === null || !("reasoning_content" in message)) return message
-      const { reasoning_content: _, ...rest } = message
-      return rest
-    }),
-  }
-}

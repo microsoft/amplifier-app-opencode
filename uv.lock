@@ -133,7 +133,7 @@ wheels = [
 [[package]]
 name = "amplifier-agent"
 version = "0.23.1"
-source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fpython&rev=http-face-opencode#2174da32361a79145b07511b1a50d2576a9273ba" }
+source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fpython&rev=http-face-opencode#ce7df4a77a53c25d7767b2b39fd2f5d50d4e3346" }
 dependencies = [
     { name = "amplifier-agent-engine" },
 ]
@@ -146,7 +146,7 @@ github-copilot = [
 [[package]]
 name = "amplifier-agent-engine"
 version = "0.23.1"
-source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fengine&rev=http-face-opencode#2174da32361a79145b07511b1a50d2576a9273ba" }
+source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fengine&rev=http-face-opencode#ce7df4a77a53c25d7767b2b39fd2f5d50d4e3346" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "amplifier-foundation" },
@@ -182,7 +182,7 @@ github-copilot = [
 [[package]]
 name = "amplifier-agent-http"
 version = "0.23.1"
-source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fhttp&rev=http-face-opencode#2174da32361a79145b07511b1a50d2576a9273ba" }
+source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fhttp&rev=http-face-opencode#ce7df4a77a53c25d7767b2b39fd2f5d50d4e3346" }
 dependencies = [
     { name = "amplifier-agent", extra = ["github-copilot"] },
     { name = "starlette" },

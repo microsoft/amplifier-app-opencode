@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { defaultModelKey, modelEntries, sessionHeader, titleFrom, withoutReasoning } from "../src/mapping.ts"
+import { defaultModelKey, modelEntries, sessionHeader, titleFrom } from "../src/mapping.ts"
 
 describe("sessionHeader", () => {
   test("is a valid Amplifier session id derived from the opencode session id", () => {
@@ -46,23 +46,4 @@ test("titleFrom uses the first nonempty line, at most 60 characters", () => {
   expect(titleFrom("\n  Fix the parser  \nmore")).toBe("Fix the parser")
   expect(titleFrom("x".repeat(80))).toBe(`${"x".repeat(57)}...`)
   expect(titleFrom("  \n ")).toBeUndefined()
-})
-
-test("withoutReasoning drops reasoning_content and keeps everything else", () => {
-  const body = {
-    model: "amplifier",
-    messages: [
-      { role: "user", content: "hi" },
-      { role: "assistant", content: "hello", reasoning_content: "thinking" },
-    ],
-    stream: true,
-  }
-  expect(withoutReasoning(body)).toEqual({
-    model: "amplifier",
-    messages: [
-      { role: "user", content: "hi" },
-      { role: "assistant", content: "hello" },
-    ],
-    stream: true,
-  })
 })

@@ -1,6 +1,7 @@
 """Driving opencode in the twin and reading what Amplifier kept."""
 
 from dataclasses import dataclass
+from decimal import Decimal
 import hashlib
 import json
 import os
@@ -122,6 +123,30 @@ def turns(sessions: Path, session: str) -> list[dict]:
         }
         for record in records
     ]
+
+
+def turn_cost(turn: dict) -> Decimal:
+    """The USD cost a turn record reports, summed over its models."""
+    entries = turn["result"]["usage"]["fields"]["mapping"]["entries"]
+    return sum(
+        (Decimal(entry["fields"]["mapping"]["cost"]["mapping"]["USD"]["decimal"]) for entry in entries), Decimal(0)
+    )
+
+
+def context_sizes(sessions: Path, session: str) -> list[int]:
+    """The context size the face reports for each turn of a pulled Amplifier session: the input of the turn's last
+    primary model request, cache writes included, read from the session's observation capture."""
+    path = sessions / session / "context-intelligence" / "events.jsonl"
+    sizes: list[int] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        event = json.loads(line)
+        data = event.get("data") or {}
+        if event.get("event") == "prompt:submit":
+            sizes.append(0)
+        elif event.get("event") == "llm:response" and data.get("parent_id") is None and data.get("usage"):
+            usage = data["usage"]
+            sizes[-1] = usage["input_tokens"] + (usage.get("cache_write_tokens") or 0)
+    return sizes
 
 
 def word(text: str) -> str:

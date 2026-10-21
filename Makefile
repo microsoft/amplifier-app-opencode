@@ -7,6 +7,8 @@ AMPLIFIER_AGENT_DIR ?= ../amplifier-agent
 # Resolve git+https://github.com/microsoft/amplifier-agent from a local checkout instead of GitHub.
 LOCAL_AGENT := GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.$(abspath $(AMPLIFIER_AGENT_DIR)).insteadOf \
 	GIT_CONFIG_VALUE_0=https://github.com/microsoft/amplifier-agent
+# Every package from that repository moves together; upgrading only one keeps the others' locked commit.
+AGENT_PACKAGES := $(addprefix --upgrade-package ,amplifier-agent-http amplifier-agent amplifier-agent-engine)
 
 .PHONY: help plugin-deps plugin check test e2e fmt sync-local lock-local
 
@@ -54,8 +56,8 @@ fmt: ## Format and fix lint
 	uv run ruff check --fix src tests
 
 sync-local: ## uv sync with amplifier-agent from AMPLIFIER_AGENT_DIR (its committed HEAD)
-	$(LOCAL_AGENT) uv lock --upgrade-package amplifier-agent-http
+	$(LOCAL_AGENT) uv lock $(AGENT_PACKAGES)
 	$(LOCAL_AGENT) uv sync
 
-lock-local: ## Relock amplifier-agent-http against AMPLIFIER_AGENT_DIR without syncing
-	$(LOCAL_AGENT) uv lock --upgrade-package amplifier-agent-http
+lock-local: ## Relock the amplifier-agent packages against AMPLIFIER_AGENT_DIR without syncing
+	$(LOCAL_AGENT) uv lock $(AGENT_PACKAGES)

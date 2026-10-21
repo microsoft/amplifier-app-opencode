@@ -259,18 +259,128 @@ function titleFrom(text) {
     return;
   return line.length <= 60 ? line : `${line.slice(0, 57).trimEnd()}...`;
 }
-function withoutReasoning(body) {
-  if (typeof body !== "object" || body === null || !("messages" in body) || !Array.isArray(body.messages))
-    return body;
+
+// src/usage.ts
+var CONTEXT_FIELD = "com.microsoft.amplifier.context";
+var CARRIER_COST = [{ input: 0, output: 0, cache: { read: 0, write: 1e6 } }];
+function count(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+function record(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
+}
+function costUSD(value) {
+  if (typeof value === "string" && value.trim() !== "")
+    return count(Number(value));
+  return count(value);
+}
+function recordedUsage(usage) {
+  const write = costUSD(usage.cost_usd) ?? 0;
+  const details = record(usage.prompt_tokens_details) ?? {};
+  const tokens = count(record(usage[CONTEXT_FIELD])?.tokens);
+  if (tokens !== undefined) {
+    const { completion_tokens_details: _, ...rest } = usage;
+    return {
+      ...rest,
+      prompt_tokens: tokens,
+      completion_tokens: 0,
+      total_tokens: tokens,
+      prompt_tokens_details: { ...details, cached_tokens: 0, cache_write_tokens: write }
+    };
+  }
+  const prompt = count(usage.prompt_tokens);
+  const completion = count(usage.completion_tokens);
+  if (prompt === undefined || completion === undefined)
+    return usage;
+  const input = prompt - (count(details.cache_write_tokens) ?? 0) + write;
   return {
-    ...body,
-    messages: body.messages.map((message) => {
-      if (typeof message !== "object" || message === null || !("reasoning_content" in message))
-        return message;
-      const { reasoning_content: _, ...rest } = message;
-      return rest;
-    })
+    ...usage,
+    prompt_tokens: input,
+    total_tokens: input + completion,
+    prompt_tokens_details: { ...details, cache_write_tokens: write }
   };
+}
+var LF = 10;
+var CR = 13;
+var decoder = new TextDecoder("utf-8", { fatal: true });
+var encoder = new TextEncoder;
+function terminatorEnd(bytes, index, final) {
+  if (bytes[index] === LF)
+    return index + 1;
+  if (bytes[index] !== CR)
+    return -1;
+  if (index + 1 < bytes.length)
+    return bytes[index + 1] === LF ? index + 2 : index + 1;
+  return final ? index + 1 : -1;
+}
+function eventLength(bytes, final) {
+  let lineStart = 0;
+  for (let index = 0;index < bytes.length; index++) {
+    if (bytes[index] !== LF && bytes[index] !== CR)
+      continue;
+    const end = terminatorEnd(bytes, index, final);
+    if (end < 0)
+      return 0;
+    if (index === lineStart)
+      return end;
+    lineStart = end;
+    index = end - 1;
+  }
+  return 0;
+}
+function rewriteEvent(event) {
+  let text;
+  try {
+    text = decoder.decode(event);
+  } catch {
+    return event;
+  }
+  const body = text.replace(/(\r\n|\r|\n)+$/, "");
+  const ending = text.slice(body.length);
+  const lines = body.split(/\r\n|\r|\n/);
+  if (!lines.every((line) => line.startsWith("data:")))
+    return event;
+  const data = lines.map((line) => line.slice(line.startsWith("data: ") ? 6 : 5)).join(`
+`);
+  let parsed;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return event;
+  }
+  const chunk = record(parsed);
+  const usage = record(chunk?.usage);
+  if (!chunk || !usage)
+    return event;
+  return encoder.encode(`data: ${JSON.stringify({ ...chunk, usage: recordedUsage(usage) })}${ending}`);
+}
+function concat(left, right) {
+  if (left.length === 0)
+    return right;
+  const joined = new Uint8Array(left.length + right.length);
+  joined.set(left);
+  joined.set(right, left.length);
+  return joined;
+}
+function usageRewriter() {
+  let pending = new Uint8Array(0);
+  const drain = (controller, final) => {
+    for (let length = eventLength(pending, final);length > 0; length = eventLength(pending, final)) {
+      controller.enqueue(rewriteEvent(pending.subarray(0, length)));
+      pending = pending.subarray(length);
+    }
+  };
+  return new TransformStream({
+    transform(chunk, controller) {
+      pending = concat(pending, chunk);
+      drain(controller, false);
+    },
+    flush(controller) {
+      drain(controller, true);
+      if (pending.length > 0)
+        controller.enqueue(pending);
+    }
+  });
 }
 
 // src/index.ts
@@ -414,7 +524,8 @@ async function register(ctx, live, defaultModel, setDefaultAgent, stale) {
       providers.models.update(PROVIDER, entry.key, (model) => {
         model.modelID = entry.modelID;
         model.name = entry.name;
-        model.limit = { context: 0, output: 0 };
+        model.limit = { context: entry.contextWindow ?? 0, output: 0 };
+        model.cost = CARRIER_COST;
         model.variants = entry.efforts.map((effort) => ({
           id: effort,
           settings: { reasoningEffort: effort }
@@ -450,17 +561,16 @@ async function register(ctx, live, defaultModel, setDefaultAgent, stale) {
     delete event.options.maxTokens;
     event.tools = {};
   }, SCOPE);
-  await ctx.session.hook("http.request", async (event) => {
-    const text = await event.request.clone().text();
-    if (!text.includes('"reasoning_content"'))
+  await ctx.session.hook("http.response", (event) => {
+    const { response } = event;
+    if (!response.body || !response.headers.get("content-type")?.startsWith("text/event-stream"))
       return;
-    const headers = new Headers(event.request.headers);
+    const headers = new Headers(response.headers);
     headers.delete("content-length");
-    event.request = new Request(event.request.url, {
-      method: event.request.method,
-      headers,
-      body: JSON.stringify(withoutReasoning(JSON.parse(text))),
-      signal: event.request.signal
+    event.response = new Response(response.body.pipeThrough(usageRewriter()), {
+      status: response.status,
+      statusText: response.statusText,
+      headers
     });
   }, SCOPE);
   await ctx.session.hook("title", (event) => {

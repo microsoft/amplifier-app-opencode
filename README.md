@@ -88,10 +88,15 @@ random token, registers it as the `amplifier` provider, and adds the `amplifier`
 a durable Amplifier session. opencode's own tools are not offered to Amplifier models, so all tool work runs inside
 Amplifier, in the session's directory.
 
+The plugin rewrites each turn's usage so opencode's context meter shows the size of Amplifier's last model request
+against the model's window, and its cost shows what Amplifier reports. opencode's own compaction keeps the transcript
+unchanged; Amplifier compacts its session itself.
+
 ## Troubleshooting
 
 - Run `amplifier-opencode doctor`. It checks the opencode version, the installed plugin, and which providers have
   credentials.
+- The context meter can pass 100%. It reports Amplifier's context, which Amplifier compacts on its own schedule.
 - Logs are in `~/.local/state/amplifier-opencode/`: `plugin.log` and one face log per directory.
 - Credentials resolve in this order, later wins: the environment, opencode connections, then `amplifier.json`.
   Connections made in opencode apply at once. Keys exported in your shell reach Amplifier only after
