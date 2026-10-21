@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "amplifier-app-opencode"
 version = "0.23.1"
 description = "Amplifier Agent as the agent inside opencode"
+readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12,<3.15"
 dependencies = [
