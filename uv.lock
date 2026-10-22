@@ -132,8 +132,8 @@ wheels = [
 
 [[package]]
 name = "amplifier-agent"
-version = "0.23.1"
-source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fpython&rev=957230c401d1221b109e846704d81f799cbbf554#957230c401d1221b109e846704d81f799cbbf554" }
+version = "0.24.0"
+source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fpython&rev=v0.24.0#8541fce18fe70483be674f467ddaf9e092ee5f77" }
 dependencies = [
     { name = "amplifier-agent-engine" },
 ]
@@ -145,8 +145,8 @@ github-copilot = [
 
 [[package]]
 name = "amplifier-agent-engine"
-version = "0.23.1"
-source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fengine&rev=957230c401d1221b109e846704d81f799cbbf554#957230c401d1221b109e846704d81f799cbbf554" }
+version = "0.24.0"
+source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fengine&rev=v0.24.0#8541fce18fe70483be674f467ddaf9e092ee5f77" }
 dependencies = [
     { name = "amplifier-core" },
     { name = "amplifier-foundation" },
@@ -181,8 +181,8 @@ github-copilot = [
 
 [[package]]
 name = "amplifier-agent-http"
-version = "0.23.1"
-source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fhttp&rev=957230c401d1221b109e846704d81f799cbbf554#957230c401d1221b109e846704d81f799cbbf554" }
+version = "0.24.0"
+source = { git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fhttp&rev=v0.24.0#8541fce18fe70483be674f467ddaf9e092ee5f77" }
 dependencies = [
     { name = "amplifier-agent", extra = ["github-copilot"] },
     { name = "starlette" },
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "amplifier-app-opencode"
-version = "0.23.1"
+version = "0.24.0"
 source = { editable = "." }
 dependencies = [
     { name = "amplifier-agent-http" },
@@ -205,7 +205,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "amplifier-agent-http", git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fhttp&rev=957230c401d1221b109e846704d81f799cbbf554" }]
+requires-dist = [{ name = "amplifier-agent-http", git = "https://github.com/microsoft/amplifier-agent?subdirectory=packages%2Fhttp&rev=v0.24.0" }]
 
 [package.metadata.requires-dev]
 dev = [

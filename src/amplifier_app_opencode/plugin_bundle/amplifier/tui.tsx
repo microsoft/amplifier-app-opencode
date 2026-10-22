@@ -1,4 +1,4 @@
-// amplifier-opencode-plugin 0.23.1
+// amplifier-opencode-plugin 0.24.0
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal, For, Show } from "solid-js"
 
