@@ -79,6 +79,26 @@ export function addRows(a: readonly UsageRow[], b: readonly UsageRow[]): UsageRo
   return [...rows.values()]
 }
 
+/**
+ * A turn's rows from a `usage` snapshot taken while the turn runs. Amplifier reports a value it does not yet know for
+ * every request as null, so each null keeps the value the turn's previous row for that provider and model had, and is
+ * 0 when there was none. The `terminal` event's usage replaces these rows, so a value never reported ends up null.
+ */
+function runningRows(previous: readonly UsageRow[], snapshot: readonly UsageRow[]): UsageRow[] {
+  const known = new Map(previous.map((row) => [`${row.provider}/${row.model}`, row]))
+  return snapshot.map((row) => {
+    const last = known.get(`${row.provider}/${row.model}`)
+    return {
+      ...row,
+      tokensIn: row.tokensIn ?? last?.tokensIn ?? 0,
+      tokensOut: row.tokensOut ?? last?.tokensOut ?? 0,
+      cacheRead: row.cacheRead ?? last?.cacheRead ?? 0,
+      cacheWrite: row.cacheWrite ?? last?.cacheWrite ?? 0,
+      costUSD: row.costUSD ?? last?.costUSD ?? 0,
+    }
+  })
+}
+
 interface Book {
   done: UsageRow[]
   turn: UsageRow[]
@@ -170,7 +190,7 @@ export class UsageBook {
         book.running = true
         return this.get(sessionID)
       case "usage":
-        book.turn = usageRows(payload.snapshot)
+        book.turn = runningRows(book.turn, usageRows(payload.snapshot))
         return this.get(sessionID)
       case "progress":
         if (record(record(payload.data).context).compacted !== true) return undefined

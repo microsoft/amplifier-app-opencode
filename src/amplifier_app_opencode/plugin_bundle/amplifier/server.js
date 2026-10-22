@@ -1493,6 +1493,20 @@ function addRows(a, b) {
   }
   return [...rows.values()];
 }
+function runningRows(previous, snapshot) {
+  const known = new Map(previous.map((row) => [`${row.provider}/${row.model}`, row]));
+  return snapshot.map((row) => {
+    const last = known.get(`${row.provider}/${row.model}`);
+    return {
+      ...row,
+      tokensIn: row.tokensIn ?? last?.tokensIn ?? 0,
+      tokensOut: row.tokensOut ?? last?.tokensOut ?? 0,
+      cacheRead: row.cacheRead ?? last?.cacheRead ?? 0,
+      cacheWrite: row.cacheWrite ?? last?.cacheWrite ?? 0,
+      costUSD: row.costUSD ?? last?.costUSD ?? 0
+    };
+  });
+}
 function savedRows(value) {
   return (Array.isArray(value) ? value : []).map((item) => {
     const row = record3(item);
@@ -1572,7 +1586,7 @@ class UsageBook {
         book.running = true;
         return this.get(sessionID);
       case "usage":
-        book.turn = usageRows(payload.snapshot);
+        book.turn = runningRows(book.turn, usageRows(payload.snapshot));
         return this.get(sessionID);
       case "progress":
         if (record3(record3(payload.data).context).compacted !== true)
