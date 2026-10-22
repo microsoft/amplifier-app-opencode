@@ -1,0 +1,16 @@
+data: {"contract_version":"turn-events/1","session_id":"rec-0003","turn_id":"fcdc4bac-dafc-4c6f-9dfd-13230ce1c2fa","sequence":1,"type":"turn_started","payload":{"continuation":"fresh","primary_actual":{"provider":"openai","model":"gpt-6.1-sol"},"reasoning_effort":"medium"},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0003","turn_id":"fcdc4bac-dafc-4c6f-9dfd-13230ce1c2fa","sequence":2,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":null,"tokens_out":null,"cache_read_tokens":null,"cache_write_tokens":null,"cost":null}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0003","turn_id":"fcdc4bac-dafc-4c6f-9dfd-13230ce1c2fa","sequence":3,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":3246,"tokens_out":25,"cache_read_tokens":3243,"cache_write_tokens":29,"cost":{"USD":"0.0006528"}}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0003","turn_id":"fcdc4bac-dafc-4c6f-9dfd-13230ce1c2fa","sequence":4,"type":"progress","payload":{"data":{"context_size":{"tokens":3275,"budget":500000}}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0003","turn_id":"fcdc4bac-dafc-4c6f-9dfd-13230ce1c2fa","sequence":5,"type":"reasoning_delta","payload":{"text":"Thinking"},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0003","turn_id":"fcdc4bac-dafc-4c6f-9dfd-13230ce1c2fa","sequence":6,"type":"output_delta","payload":{"content":[{"type":"text","text":"Part"}]},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0003","turn_id":"fcdc4bac-dafc-4c6f-9dfd-13230ce1c2fa","sequence":7,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":3300,"tokens_out":12,"cache_read_tokens":0,"cache_write_tokens":3300,"cost":{"USD":"0.0083"}}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0003","turn_id":"fcdc4bac-dafc-4c6f-9dfd-13230ce1c2fa","sequence":8,"type":"terminal","payload":{"state":"failure","content":[{"type":"text","text":"Part"}],"error":{"code":"provider_failed","category":"provider","message":"The provider failed.","remedy":"Try again later.","retryable":true,"correlation_id":null,"details":null},"usage":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":3300,"tokens_out":12,"cache_read_tokens":0,"cache_write_tokens":3300,"cost":{"USD":"0.0083"}}]}},"at":null}
+

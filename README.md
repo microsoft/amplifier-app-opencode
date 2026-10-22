@@ -1,163 +1,137 @@
-<h1 align="center">Amplifier for opencode</h1>
+# Amplifier for opencode
 
-<p align="center">
-  <a href="docs/INSTALL.md">Install</a> &nbsp;&bull;&nbsp;
-  <a href="docs/CONFIGURATION.md">Configuration</a> &nbsp;&bull;&nbsp;
-  <a href="docs/SPEC.md">Specifications</a>
-</p>
+Use [Amplifier Agent](https://github.com/microsoft/amplifier-agent) as the agent inside [opencode](https://opencode.ai).
+Amplifier runs the whole turn: its own prompt, tools, delegation, and context management. opencode is the interface.
 
----
+## Quick start
 
-Run the [opencode](https://opencode.ai) coding TUI on top of your local
-[amplifier-agent](https://github.com/microsoft/amplifier-agent), one command to
-install, one command to start coding:
-
-```bash
-# 1. install (also installs everything it needs)
-curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh | bash
-
-# 2. set up the connection and jump into opencode
-amplifier-opencode launch
-```
-
-amplifier-opencode discovers which models your amplifier-agent serves, writes a
-working opencode config from that discovery, and opens opencode, re-synced
-every time, with no config to maintain by hand.
-
-## Features
-
-- **Self-managing.** Installs and updates amplifier-agent and opencode, and walks you through connecting a provider on first run.
-- **Always-live models.** The model picker is rediscovered from `GET /v1/models` on every launch, so it never drifts from what amplifier-agent is actually serving.
-- **Zero-config bridge.** amplifier-agent's server is auto-started in the background if it isn't already running.
-- **Skills as commands.** amplifier-agent skills show up as opencode slash commands, no extra setup.
-- **Modes as agents.** amplifier-agent modes show up as opencode agents, shown as `<mode> (Amplifier)`.
-- **Built-in `doctor`.** Diagnoses any setup issue in one command.
-
-## Install
+Requirements: opencode 2.1 or newer, Linux or macOS (Windows through WSL), and a key for a provider Amplifier supports.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh | bash
+opencode auth login anthropic          # once; or /connect inside opencode
+opencode
 ```
 
-This installs [`uv`](https://docs.astral.sh/uv/) if missing, and the `amplifier-opencode` CLI itself. It does not install amplifier-agent or opencode; those come from the first `launch`.
-
-Prefer to review the script before running it:
+The installer installs [uv](https://docs.astral.sh/uv/) if it is missing, installs `amplifier-opencode` with
+`uv tool install`, and adds the Amplifier plugin to opencode. Without the script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh -o install.sh
-less install.sh
-bash install.sh
+uv tool install git+https://github.com/microsoft/amplifier-app-opencode
+amplifier-opencode install
 ```
 
-Then run `amplifier-opencode launch`. On first run it self-heals the rest of the stack: it installs amplifier-agent and opencode if either is missing, and walks you through connecting a provider if none is configured. Anything already installed and healthy is left untouched. Once the stack is healthy, opencode opens with the model picker under the **Amplifier** section, re-synced on every future run. Want just the setup without launching? Run `amplifier-opencode setup`.
+In opencode:
 
-For pinning a version, manual install steps, and uninstalling, see [docs/INSTALL.md](docs/INSTALL.md).
+- `amplifier` is the default agent. Every message goes to Amplifier.
+- `/models` lists `Amplifier default` and every model Amplifier can reach with your keys, as
+  `amplifier/<provider>-<model>`, for example `amplifier/anthropic-claude-sonnet-5-5`.
+- Each model has one variant per reasoning effort it supports, for example `amplifier/anthropic-claude-opus-5-5#high`.
+- A session keeps its Amplifier conversation, including tool work, across turns and restarts.
 
-### Platform support
+Providers you connect in opencode reach Amplifier with no other step: Anthropic, OpenAI, and Google API keys, a GitHub
+Copilot sign-in, and an Azure key with its resource name. Connecting a provider while opencode runs restarts Amplifier,
+and its models appear in `/models`.
 
-macOS, Linux, and WSL are fully supported. Native Windows is not supported, run `amplifier-opencode` inside **WSL** instead. If a component can't be auto-installed on your platform, `amplifier-opencode` tells you what to do instead of failing silently.
+Check the installation with `amplifier-opencode doctor`.
 
-## Connecting a provider
+## Migrating from 0.4.x
 
-**You usually don't need to do anything here.** On first run, if no provider is configured, `amplifier-opencode` walks you through picking one and stores the credential for you.
-
-To set one yourself, export a key before running `launch`:
+0.4.x was a launcher: `amplifier-opencode launch` started a background `amplifier-agent serve` server, wrote a provider
+block into opencode 1.x config, and then started opencode. This version is an opencode 2.x plugin. The plugin starts
+and stops Amplifier for you, and you run `opencode` directly.
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+opencode upgrade                                    # opencode 2.1 or newer
+uv tool upgrade amplifier-app-opencode              # or run install.sh again
+amplifier-opencode install                          # adds the plugin, removes 0.4.x leftovers
+pkill -f "amplifier-agent serve"                    # the old background server
+uv tool uninstall amplifier-agent                   # the old amplifier-agent CLI
 ```
 
-amplifier-agent also supports OpenAI, Azure OpenAI, Ollama, and GitHub Copilot. Run `amplifier-opencode doctor` to see which providers will actually be served.
+The details of what changed are in [migrating from 0.4.x](docs/migrating-from-0.4.md).
 
-### GitHub Copilot
+## Configuration
 
-The `gh` CLI bridge is the easiest way to connect Copilot:
+`amplifier-opencode install` writes `~/.config/opencode/amplifier.json` if it does not exist:
 
-```bash
-export GITHUB_TOKEN=$(gh auth token)
+```json
+{
+  "defaultModel": null,
+  "setDefaultAgent": true,
+  "approvals": "opencode",
+  "environment": {},
+  "command": "amplifier-opencode"
+}
 ```
 
-Copilot models appear namespaced as `github-copilot/<model>`, shown as `<model> (GitHub)` in the picker.
-
-For the full env var table, the persistent credential file, and `host_config.json`, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-## Skills and modes
-
-Every launch also bridges amplifier-agent's skills and modes into opencode:
-
-- **Skills become slash commands.** Each user-invocable skill becomes a `/<name>` command that runs the skill server-side in amplifier-agent.
-- **Modes become agents.** Each mode becomes a selectable opencode agent, shown as `<mode> (Amplifier)` in the agent picker.
-
-Files land next to your opencode config, at `~/.config/opencode/command/` and `~/.config/opencode/agent/` globally, or under `.opencode/` with `--project-dir`. `amplifier-opencode` only manages the files it generated; a command or agent file you wrote yourself is never overwritten.
-
-opencode's own commands are untouched. `/models`, `/connect`, and everything else it ships with keep working as they always did.
-
-See [docs/spec/skills-and-modes-bridge.md](docs/spec/skills-and-modes-bridge.md) for the exact file shapes and conflict handling.
-
-## Everyday use
-
-```bash
-amplifier-opencode launch     # set up the bridge and open the opencode TUI
-amplifier-opencode            # refresh the bridge only, no launch (same as `prepare`)
-amplifier-opencode setup      # install/heal the stack and connect a provider, no launch
-amplifier-opencode update     # update amplifier-opencode, amplifier-agent, and opencode
-amplifier-opencode doctor     # diagnose every prerequisite in one shot
+```
+defaultModel      a model from /v1/models as <provider>/<model>, for example "openai/gpt-6.1-sol". It also sets
+                  Amplifier's default provider and model; null uses the first connected provider: OpenAI,
+                  Anthropic, Google, ChatGPT, then GitHub Copilot
+setDefaultAgent   make amplifier the default agent
+approvals         "opencode" asks opencode's permissions before each Amplifier tool call; "allow" runs them
+                  all; "deny" refuses every tool call
+environment       variables added to Amplifier's environment; they override opencode connections
+command           the amplifier-opencode executable the plugin starts
 ```
 
-Run the plain refresh any time you change providers, add a credential, or restart amplifier-agent. Pass arguments straight through to opencode after `--`:
+Amplifier also reads its own settings from `~/.amplifier-agent/config.json` and `AMPLIFIER_AGENT_*` variables; see
+[configuration](https://github.com/microsoft/amplifier-agent/blob/main/docs/configuration.md).
 
-```bash
-amplifier-opencode launch -- run "summarise this codebase"
-```
+`amplifier-opencode install --project DIR` installs the plugin for one project, in `DIR/.opencode/plugins/amplifier/`.
+`amplifier-opencode uninstall` removes it.
 
-The full command and flag reference is in [docs/spec/cli.md](docs/spec/cli.md).
+## How it works
+
+opencode loads the plugin from its plugins directory. For each opencode location, the plugin starts Amplifier's
+[HTTP face](https://github.com/microsoft/amplifier-agent/blob/main/docs/http/quickstart.md) on a local port with a
+random token, registers it as the `amplifier` provider, and adds the `amplifier` agent. Each opencode session maps to
+a durable Amplifier session. Each opencode turn is one Amplifier turn.
+Amplifier's tool calls show as opencode tools (bash, read, write, edit, apply_patch, glob, grep, webfetch, websearch,
+task) that Amplifier already ran in the session's directory. opencode's permissions decide each call first: the `bash`
+key for commands, `edit` for file changes, `read` for reads and searches, `webfetch` for web requests, and `mcp` for MCP
+tools. Esc stops the turn.
+
+A turn that edits or searches spans several opencode steps: opencode's edit, patch, glob, and grep tools show
+Amplifier's calls with their diffs and match counts, and never run them again. These tools stay allowed for the
+amplifier agent; Amplifier asks for the effects they show.
+
+opencode's skills (`.opencode/skills`, `.claude/skills`, `.agents/skills`, global ones, and config `skills`) and its
+enabled MCP servers reach Amplifier too. Amplifier restarts when they change, and once after a crash.
+
+The plugin reports each turn's usage so opencode's context meter shows the size of Amplifier's last model request
+against the model's window, and its cost shows what Amplifier reports. opencode's own compaction keeps the transcript
+unchanged; Amplifier compacts its session itself.
+
+The sidebar's Amplifier usage panel shows tokens in and out, cache reads and writes, and cost for each provider and
+model, for the last turn and the session, and how often Amplifier compacted the session. Session totals are kept in
+`~/.local/state/amplifier-opencode/usage/` and survive restarts.
 
 ## Troubleshooting
 
-Run the doctor before asking anyone for help:
-
-```bash
-amplifier-opencode doctor
-```
-
-It reports on every prerequisite in one shot, from binaries on `PATH` to which providers will actually resolve.
-
-A couple of common fixes:
-
-- `opencode not on PATH`: `curl -fsSL https://opencode.ai/install | bash`, then open a new terminal.
-- `No provider credentials resolvable`: export `ANTHROPIC_API_KEY`, or run `amplifier-agent auth set anthropic <key>`.
-
-For the meaning of every other failure, see [docs/ISSUES.md](docs/ISSUES.md). Logs live at `<tempdir>/amplifier-agent.log` (the backend server) and `~/.local/share/opencode/log/opencode.log` (opencode itself).
-
-## Architecture at a glance
-
-```
-opencode TUI
-    |
-amplifier-opencode adapter      (this repo: discover, translate, bridge)
-    |
-amplifier-agent HTTP face       (multi-provider chat-completions server)
-    |
-providers                       (Anthropic, OpenAI, Azure OpenAI, Ollama, GitHub Copilot)
-```
-
-`amplifier-opencode` is the adapter layer only. No model logic, no prompt content, no tool-calling logic lives here; every intelligent behavior happens server-side in amplifier-agent. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design notes.
-
-## Documentation
-
-| Document | Covers |
-|---|---|
-| [Install](docs/INSTALL.md) | Reviewing the script, manual install, pinning a version, updating, uninstalling |
-| [Configuration](docs/CONFIGURATION.md) | Provider env vars, the credential file, `host_config.json`, raw payload capture |
-| [Specifications](docs/SPEC.md) | Normative contracts: CLI surface, install/update, providers, generated config, skills/modes bridge, agent integration, file locations |
-| [Architecture](docs/ARCHITECTURE.md) | Why it works the way it does: the launch sequence, live config generation, the two bridges |
-| [Known issues](docs/ISSUES.md) | Tracked gaps between the stated contract and current behavior |
-| [E2E testing](docs/E2E_TESTING.md) | The DTU end-to-end test framework and how to add a suite |
-| [Development](DEVELOPMENT.md) | Local setup and the `make` command surface |
+- Run `amplifier-opencode doctor`. It checks the opencode version, the installed plugin, and which providers have
+  credentials.
+- The context meter can pass 100%. It reports Amplifier's context, which Amplifier compacts on its own schedule.
+- Logs are in `~/.local/state/amplifier-opencode/`: `plugin.log` and one face log per directory.
+- Credentials resolve in this order, later wins: the environment, opencode connections, then `amplifier.json`.
+  Connections made in opencode apply at once. Keys exported in your shell reach Amplifier only after
+  `opencode service restart`, because opencode 2.x keeps a background service.
+- The provider shows as `Amplifier (run: amplifier-opencode install)` when the installed plugin and the package
+  versions differ. Run `amplifier-opencode install`.
 
 ## Development
 
-End-to-end suites drive the real installed `amplifier-opencode` binary, and in TUI suites the real opencode TUI, inside an isolated DTU container. See [DEVELOPMENT.md](DEVELOPMENT.md) for local setup and the `make` command surface.
+```bash
+make sync-local     # uv sync against the sibling ../amplifier-agent checkout
+make plugin         # build the plugin bundle into the package
+make check          # lint, type-check, and confirm the plugin bundle is up to date
+make test           # unit tests
+make e2e            # end-to-end suites in a Digital Twin Universe; SUITE=<name> runs one
+```
+
+The end-to-end suites need Docker and `OPENAI_API_KEY`. They publish this checkout and `../amplifier-agent` through
+a local Gitea and install as a user would; see `tests/e2e/conftest.py`.
 
 ## Contributing
 

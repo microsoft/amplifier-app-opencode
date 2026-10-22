@@ -1,0 +1,43 @@
+# opencode 2.1.2 on a user's Linux machine, with this checkout and the amplifier-agent checkout served at their GitHub
+# URLs, so the install a user runs fetches the local code.
+#
+#   export OPENAI_API_KEY=...
+#   digital-twin-universe launch --profile opencode-amplifier
+#   digital-twin-universe exec --id <id> --command \
+#     'curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/<branch>/install.sh \
+#      | AMPLIFIER_OPENCODE_REF=<branch> bash'
+#
+# AMPLIFIER_AGENT_DIR names the amplifier-agent checkout; it must contain the commit this repository's dependency
+# names. OPENAI_API_KEY reaches the twin only as the file /run/secrets/openai_api_key, so opencode
+# finds no provider in its environment until one is connected:
+#
+#   opencode auth login openai --method key
+name: opencode-amplifier
+
+x-dtu:
+  description: opencode 2.1.2 with amplifier-app-opencode installed from local checkouts at their GitHub URLs
+  twin_machine: twin
+  repositories:
+    - path: ../../..
+      url: https://github.com/microsoft/amplifier-app-opencode
+    - path: ${AMPLIFIER_AGENT_DIR:-../../../../amplifier-agent}
+      url: https://github.com/microsoft/amplifier-agent
+  rewrites:
+    # raw.githubusercontent.com/<owner>/<repo>/<branch>/<path> is Gitea's /<owner>/<repo>/raw/branch/<branch>/<path>.
+    - match: raw.githubusercontent.com/microsoft/amplifier-app-opencode
+      target: http://git:3000/dtu/amplifier-app-opencode/raw/branch
+
+services:
+  twin:
+    build: .
+    secrets:
+      - openai_api_key
+    command: sleep infinity
+    healthcheck:
+      test: [CMD, opencode, --version]
+      interval: 2s
+      start_period: 30s
+
+secrets:
+  openai_api_key:
+    environment: OPENAI_API_KEY

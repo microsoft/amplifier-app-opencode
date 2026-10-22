@@ -1,116 +1,103 @@
-"""Pytest wiring for the DTU-based opencode TUI e2e suite.
+"""amplifier-app-opencode installed and driven as a user would, in a Digital Twin Universe.
 
-The suite attaches to a WARM DTU provisioned out-of-band by
-``uv run python tests/e2e/cli.py up`` (or auto-provisioned by ``cli.py run``). Tests
-read the shared state file to find the instance rather than launching their own, and
-self-skip cleanly whenever the DTU tooling or a warm instance is absent -- so a plain
-``uv run pytest`` stays green on any host.
+One universe per run, from the profile at `.agents/digital-twin-universe/opencode-amplifier/`. Docker and
+OPENAI_API_KEY are required; AMPLIFIER_AGENT_DIR names the amplifier-agent checkout served at its GitHub URL.
+
+    make e2e                    every suite
+    make e2e SUITE=chat         one suite: install, chat, coding, tools, approvals, cancel, continuity, extensions, or tui
+    E2E_KEEP=1 make e2e         leave the universe running and print its id
+    E2E_UNIVERSE=<id> make e2e  run against a kept universe instead of launching one
+    E2E_REF=<branch>            the branch to install (default: this checkout's branch)
 """
 
-from __future__ import annotations
+from collections.abc import Iterator
+import os
+import shlex
 
-import shutil
-import sys
-from collections.abc import Generator
-from pathlib import Path
-
+from digital_twin_universe import lib
+from digital_twin_universe.schemas import DigitalTwinUniverseError, ExecResult
 import pytest
+from support import HOME, LAUNCH_TIMEOUT, PROFILE, Twin, current_branch, wait_for
 
-# Make the `framework` and `suites` packages importable (this file's own directory,
-# tests/e2e/, is their shared parent).
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from framework import dtu, dtu_manager, state
-from framework.driver import TmuxTuiDriver
-from framework.judge import AIUserJudge
-from framework.progress import log
-
-# In-DTU project dir the TUI launches from.
-PROJECT_DIR = "/root/oc-e2e"
-TMUX_SESSION = "oc-e2e"
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    """Register the `dtu` and `fresh_dtu` markers (registration satisfies strict-markers)."""
-    config.addinivalue_line(
-        "markers", "dtu: DTU-based end-to-end tests requiring amplifier-digital-twin"
-    )
-    config.addinivalue_line(
-        "markers",
-        "fresh_dtu: requires a freshly-provisioned DTU (clean amplifier-agent server) rather "
-        "than the reused warm DTU; forces one fresh provision per session",
-    )
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _require_dtu_cli() -> None:
-    """Skip the entire e2e suite when the DTU CLI is not installed."""
-    if shutil.which("amplifier-digital-twin") is None:
-        pytest.skip("amplifier-digital-twin not on PATH", allow_module_level=True)
+LOGIN = "opencode-login"
 
 
 @pytest.fixture(scope="session")
-def _fresh_dtu(request: pytest.FixtureRequest) -> bool:
-    """Force ONE fresh DTU provision per session when any collected test wants it.
-
-    amplifier-agent is a long-lived server whose skill discovery is fixed at server
-    STARTUP. Tests marked ``fresh_dtu`` (e.g. the skills suite) configure discovery via
-    launch-time overrides (``AMPLIFIER_SKILLS_DIR`` / ``--host-config``), which a stale
-    server reused from a prior run would ignore. Provisioning a clean DTU guarantees no
-    pre-existing server, so the marked suite's launch starts a server that honors them.
-
-    Runs the existing ``dtu_manager.provision()`` lifecycle exactly once per session, and
-    only when a ``fresh_dtu``-marked item is collected -- so non-marked suites (chat) keep
-    reusing the warm DTU unchanged. ``dtu_id`` depends on this, so the fresh provision
-    completes (and rewrites the state file) before any test reads the instance id.
-    """
-    wants_fresh = any(
-        item.get_closest_marker("fresh_dtu") is not None for item in request.session.items
-    )
-    if not wants_fresh:
-        return False
-    log("conftest: fresh_dtu-marked tests present; provisioning a clean DTU for this session")
-    dtu_manager.provision()
-    return True
-
-
-@pytest.fixture(scope="session")
-def dtu_id(_fresh_dtu: bool) -> str:
-    """The DTU instance id, skipping if none is provisioned or it is not ready.
-
-    Depends on ``_fresh_dtu`` so that, when the session includes ``fresh_dtu``-marked
-    tests, a clean DTU is provisioned first and this reads that fresh instance. Otherwise
-    it reads the warm DTU as before.
-    """
-    current = state.read()
-    if current is None:
-        pytest.skip("no warm DTU; run `uv run python tests/e2e/cli.py up`")
-        raise RuntimeError("unreachable")  # help pyright narrow past pytest.skip
-    instance_id = current["dtu_id"]
-    if not dtu.check_ready(instance_id):
-        pytest.skip(f"DTU {instance_id} not ready; re-run `up`")
-    return instance_id
-
-
-@pytest.fixture
-def opencode_session(dtu_id: str) -> Generator[TmuxTuiDriver, None, None]:
-    """Launch the opencode TUI inside the DTU and yield a ready driver.
-
-    Spawns ``amplifier-opencode launch --project-dir <dir>`` under tmux, waits for the
-    main-screen marker, yields the driver, and kills the session on teardown.
-    """
-    exec_prefix = ["amplifier-digital-twin", "exec", dtu_id, "--"]
-    driver = TmuxTuiDriver(TMUX_SESSION, exec_prefix=exec_prefix)
-    driver.run_command(["bash", "-lc", f"mkdir -p {PROJECT_DIR}"])
-    driver.spawn(f"amplifier-opencode launch --project-dir {PROJECT_DIR}")
+def twin(request: pytest.FixtureRequest) -> Iterator[Twin]:
+    existing = os.environ.get("E2E_UNIVERSE")
+    if existing:
+        yield Twin(lib.status(existing).id)
+        return
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise pytest.UsageError("Set OPENAI_API_KEY; the twin connects OpenAI in opencode with it.")
+    keep = os.environ.get("E2E_KEEP") == "1"
     try:
-        driver.wait_for_text("tab agents", timeout=120)
-        yield driver
+        universe = lib.launch(PROFILE, timeout_seconds=LAUNCH_TIMEOUT)
+    except DigitalTwinUniverseError as error:
+        if error.universe_id and not keep:
+            lib.destroy(error.universe_id)
+        raise
+    try:
+        yield Twin(universe.id)
     finally:
-        driver.close()
+        if keep:
+            reporter = request.config.pluginmanager.get_plugin("terminalreporter")
+            reporter.write_line(
+                f"Kept universe {universe.id}. Remove it: digital-twin-universe destroy --id {universe.id}"
+            )
+        else:
+            lib.destroy(universe.id).require_removed()
 
 
-@pytest.fixture
-def judge() -> AIUserJudge:
-    """The AI-user judge used to evaluate TUI screens."""
-    return AIUserJudge()
+@pytest.fixture(scope="session")
+def ref() -> str:
+    return current_branch()
+
+
+@pytest.fixture(scope="session")
+def installed(twin: Twin, ref: str) -> ExecResult:
+    """The README's install, run once: install.sh fetched from raw.githubusercontent.com for this branch."""
+    url = f"https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/{ref}/install.sh"
+    return twin.run(f"curl -fsSL {url} | AMPLIFIER_OPENCODE_REF={shlex.quote(ref)} bash", workdir=HOME, timeout=900)
+
+
+@pytest.fixture(scope="session")
+def connected(twin: Twin, installed: ExecResult) -> str:
+    """OpenAI connected in opencode as a user would: `opencode auth login` at a terminal, the API key pasted at its
+    prompt. The key goes from the twin's secret file to tmux's paste buffer, never onto a command line. Returns the
+    screen after the login."""
+    assert installed.exit_code == 0, f"install failed\n{installed.stdout}\n{installed.stderr}"
+
+    def screen() -> str:
+        return twin.run(f"tmux capture-pane -p -t {LOGIN}").stdout
+
+    twin.check(f"tmux kill-session -t {LOGIN} 2>/dev/null; tmux new-session -d -s {LOGIN} -x 160 -y 45", workdir=HOME)
+    try:
+        twin.check(f"tmux send-keys -t {LOGIN} -l 'opencode auth login openai --method key; echo login-exit=$?'")
+        twin.check(f"tmux send-keys -t {LOGIN} Enter")
+        assert wait_for(lambda: "API key" in screen(), timeout=180), screen()
+        twin.check(
+            'printf %s "$(cat /run/secrets/openai_api_key)" | tmux load-buffer -b key - '
+            f"&& tmux paste-buffer -d -b key -t {LOGIN} && tmux send-keys -t {LOGIN} Enter"
+        )
+        assert wait_for(lambda: "login-exit=" in screen(), timeout=120), screen()
+        result = screen()
+        assert "login-exit=0" in result, result
+        return result
+    finally:
+        twin.run(f"tmux kill-session -t {LOGIN}")
+
+
+@pytest.fixture(scope="session")
+def opencode(twin: Twin, connected: str) -> Twin:
+    """The twin with amplifier-opencode installed and OpenAI connected in opencode; amplifier.json sets no
+    `defaultModel`, so Amplifier picks its default from the OpenAI connection."""
+    return twin
+
+
+SUITES = ("install", "chat", "coding", "tools", "approvals", "cancel", "continuity", "extensions", "tui")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Suites run in the order a user meets them; tests within a file keep their order."""
+    items.sort(key=lambda item: SUITES.index(item.path.stem.removeprefix("test_")))

@@ -1,0 +1,56 @@
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":1,"type":"turn_started","payload":{"continuation":"fresh","primary_actual":{"provider":"openai","model":"gpt-6.1-sol"},"reasoning_effort":"medium"},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":2,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":null,"tokens_out":null,"cache_read_tokens":null,"cache_write_tokens":null,"cost":null}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":3,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":3,"tokens_out":19,"cache_read_tokens":0,"cache_write_tokens":4879,"cost":{"USD":"0.0123935"}}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":4,"type":"progress","payload":{"data":{"context_size":{"tokens":4882,"budget":500000}}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":5,"type":"tool_call","payload":{"call":{"call_id":"call_KvIrSc6E3G06tG0VIWkibnBg","name":"bash","source":"built-in","arguments":{"command":"echo hi"},"deadline":null}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":6,"type":"approval_request","payload":{"request":{"request_id":"555fc0e6-ab04-4a12-9d01-dd5500b02ed0","summary":"Run built-in tool \"bash\". Context: {\"working_directory\": \"/home/user/project\"}. Arguments: {\"command\": \"echo hi\"}","call_id":"call_KvIrSc6E3G06tG0VIWkibnBg","name":"bash"}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":7,"type":"approval_decision","payload":{"resolution":{"request_id":"555fc0e6-ab04-4a12-9d01-dd5500b02ed0","decision":"allow","reason":null}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":8,"type":"tool_result","payload":{"resolution":{"call_id":"call_KvIrSc6E3G06tG0VIWkibnBg","outcome":"completed","content":"{\"stdout\": \"hi\\n\", \"stderr\": \"\", \"returncode\": 0}","error":null,"truncated":false,"original_bytes":null}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":9,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":null,"tokens_out":null,"cache_read_tokens":null,"cache_write_tokens":null,"cost":null}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":10,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":4885,"tokens_out":37,"cache_read_tokens":4879,"cache_write_tokens":4927,"cost":{"USD":"0.0131874"}}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":11,"type":"progress","payload":{"data":{"context_size":{"tokens":4930,"budget":500000}}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":12,"type":"tool_call","payload":{"call":{"call_id":"call_lhZsZJSFtkykn4fvgcXZ1Ia9","name":"glob","source":"built-in","arguments":{"pattern":"hello.txt"},"deadline":null}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":13,"type":"approval_request","payload":{"request":{"request_id":"4694dbfd-042c-4aff-a406-5fcaf131e935","summary":"Run built-in tool \"glob\". Context: {\"working_directory\": \"/home/user/project\"}. Arguments: {\"pattern\": \"hello.txt\"}","call_id":"call_lhZsZJSFtkykn4fvgcXZ1Ia9","name":"glob"}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":14,"type":"approval_decision","payload":{"resolution":{"request_id":"4694dbfd-042c-4aff-a406-5fcaf131e935","decision":"allow","reason":null}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":15,"type":"tool_result","payload":{"resolution":{"call_id":"call_lhZsZJSFtkykn4fvgcXZ1Ia9","outcome":"completed","content":"{\"pattern\": \"hello.txt\", \"base_path\": \"/home/user/project\", \"total_files\": 0, \"count\": 0, \"matches\": []}","error":null,"truncated":false,"original_bytes":null}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":16,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":null,"tokens_out":null,"cache_read_tokens":null,"cache_write_tokens":null,"cost":null}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":17,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":9815,"tokens_out":61,"cache_read_tokens":9806,"cache_write_tokens":5008,"cost":{"USD":"0.0141286"}}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":18,"type":"progress","payload":{"data":{"context_size":{"tokens":5011,"budget":500000}}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":19,"type":"tool_call","payload":{"call":{"call_id":"call_OSdEM2jJbd0Fyaq5uyijUuCs","name":"write_file","source":"built-in","arguments":{"file_path":"hello.txt","content":"hello"},"deadline":null}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":20,"type":"approval_request","payload":{"request":{"request_id":"b55eeaac-bba9-4de5-b683-2d25595efcd6","summary":"Run built-in tool \"write_file\". Context: {\"working_directory\": \"/home/user/project\"}. Arguments: {\"file_path\": \"hello.txt\", \"content\": \"hello\"}","call_id":"call_OSdEM2jJbd0Fyaq5uyijUuCs","name":"write_file"}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":21,"type":"approval_decision","payload":{"resolution":{"request_id":"b55eeaac-bba9-4de5-b683-2d25595efcd6","decision":"allow","reason":null}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":22,"type":"tool_result","payload":{"resolution":{"call_id":"call_OSdEM2jJbd0Fyaq5uyijUuCs","outcome":"completed","content":"{\"file_path\": \"/home/user/project/hello.txt\", \"bytes\": 5}","error":null,"truncated":false,"original_bytes":null},"com.microsoft.amplifier.file_changes":[{"path":"hello.txt","change":"added","patch":"--- /dev/null\n+++ hello.txt\n@@ -0,0 +1 @@\n+hello\n\\ No newline at end of file\n","additions":1,"deletions":0}]},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":23,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":null,"tokens_out":null,"cache_read_tokens":null,"cache_write_tokens":null,"cost":null}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":24,"type":"output_delta","payload":{"content":[{"text":"done","type":"text"}]},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":25,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":14826,"tokens_out":66,"cache_read_tokens":14814,"cache_write_tokens":5080,"cost":{"USD":"0.0148654"}}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":26,"type":"progress","payload":{"data":{"context_size":{"tokens":5083,"budget":500000}}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":27,"type":"usage","payload":{"snapshot":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":14826,"tokens_out":66,"cache_read_tokens":14814,"cache_write_tokens":5080,"cost":{"USD":"0.0148654"}}]}},"at":null}
+
+data: {"contract_version":"turn-events/1","session_id":"rec-0001","turn_id":"7347ae70-a5d1-4fff-b55d-92d9920284dc","sequence":28,"type":"terminal","payload":{"state":"success","content":[{"text":"done","type":"text"}],"error":null,"usage":{"entries":[{"provider":"openai","model":"gpt-6.1-sol","tokens_in":14826,"tokens_out":66,"cache_read_tokens":14814,"cache_write_tokens":5080,"cost":{"USD":"0.0148654"}}]}},"at":null}
+
