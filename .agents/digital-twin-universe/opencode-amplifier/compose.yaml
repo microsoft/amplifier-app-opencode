@@ -7,8 +7,8 @@
 #     'curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/<branch>/install.sh \
 #      | AMPLIFIER_OPENCODE_REF=<branch> bash'
 #
-# AMPLIFIER_AGENT_DIR names the amplifier-agent checkout; its branch http-face-opencode is what this repository's
-# dependency resolves to. OPENAI_API_KEY reaches the twin only as the file /run/secrets/openai_api_key, so opencode
+# AMPLIFIER_AGENT_DIR names the amplifier-agent checkout; it must contain the commit this repository's dependency
+# names. OPENAI_API_KEY reaches the twin only as the file /run/secrets/openai_api_key, so opencode
 # finds no provider in its environment until one is connected:
 #
 #   opencode auth login openai --method key

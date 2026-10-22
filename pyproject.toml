@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12,<3.15"
 dependencies = [
-  "amplifier-agent-http @ git+https://github.com/microsoft/amplifier-agent@http-face-opencode#subdirectory=packages/http",
+  "amplifier-agent-http @ git+https://github.com/microsoft/amplifier-agent@957230c401d1221b109e846704d81f799cbbf554#subdirectory=packages/http",
 ]
 
 [project.scripts]
