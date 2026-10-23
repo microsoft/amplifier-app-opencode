@@ -1,5 +1,5 @@
 // @bun
-// amplifier-opencode-plugin 0.24.0
+// amplifier-opencode-plugin 0.25.0
 var __defProp = Object.defineProperty;
 var __export = (target, all) => {
   for (var name in all)
@@ -1667,9 +1667,9 @@ var plugin = {
     ]);
     if (face instanceof Error)
       log(face.message);
-    const stale = installed !== "0.24.0";
+    const stale = installed !== "0.25.0";
     if (stale) {
-      log(`plugin ${"0.24.0"} runs with amplifier-opencode ${installed ?? "(unknown)"}. ` + "Run: amplifier-opencode install");
+      log(`plugin ${"0.25.0"} runs with amplifier-opencode ${installed ?? "(unknown)"}. ` + "Run: amplifier-opencode install");
     }
     const live = { face: undefined, entries: [], fingerprint: resolved.fingerprint, ready: async () => {} };
     if (!(face instanceof Error))
