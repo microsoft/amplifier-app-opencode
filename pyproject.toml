@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "amplifier-app-opencode"
-version = "0.24.0"
+version = "0.25.0"
 description = "Amplifier Agent as the agent inside opencode"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12,<3.15"
 dependencies = [
-  "amplifier-agent-http @ git+https://github.com/microsoft/amplifier-agent@v0.24.0#subdirectory=packages/http",
+  "amplifier-agent-http @ git+https://github.com/microsoft/amplifier-agent@v0.25.0#subdirectory=packages/http",
 ]
 
 [project.scripts]
