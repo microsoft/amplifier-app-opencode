@@ -7,18 +7,15 @@ Amplifier runs the whole turn: its own prompt, tools, delegation, and context ma
 
 Requirements: opencode 2.1 or newer, Linux or macOS (Windows through WSL), and a key for a provider Amplifier supports.
 
+Ask your agent:
+
+> Install Amplifier for opencode from https://github.com/microsoft/amplifier-app-opencode.
+
+Then connect a provider and start opencode:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh | bash
 opencode auth login anthropic          # once; or /connect inside opencode
 opencode
-```
-
-The installer installs [uv](https://docs.astral.sh/uv/) if it is missing, installs `amplifier-opencode` with
-`uv tool install`, and adds the Amplifier plugin to opencode. Without the script:
-
-```bash
-uv tool install git+https://github.com/microsoft/amplifier-app-opencode
-amplifier-opencode install
 ```
 
 In opencode:
@@ -32,6 +29,20 @@ In opencode:
 Providers you connect in opencode reach Amplifier with no other step: Anthropic, OpenAI, and Google API keys, a GitHub
 Copilot sign-in, and an Azure key with its resource name. Connecting a provider while opencode runs restarts Amplifier,
 and its models appear in `/models`.
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/microsoft/amplifier-app-opencode/main/install.sh | bash
+```
+
+The installer installs [uv](https://docs.astral.sh/uv/) if it is missing, installs `amplifier-opencode` with
+`uv tool install`, and adds the Amplifier plugin to opencode. Without the script:
+
+```bash
+uv tool install git+https://github.com/microsoft/amplifier-app-opencode
+amplifier-opencode install
+```
 
 Check the installation with `amplifier-opencode doctor`.
 
